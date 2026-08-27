@@ -1,0 +1,120 @@
+[
+  {
+    "id": "JIMMS_AUTH_CSRF",
+    "name": "GET /api/auth/csrf",
+    "method": "GET",
+    "path": "/api/auth/csrf",
+    "category": "support",
+    "dataStrategy": "Ambil csrfToken sebelum login NextAuth.",
+    "requestTemplate": {},
+    "headers": {
+      "Accept": "application/json"
+    }
+  },
+  {
+    "id": "JIMMS_AUTH_LOGIN",
+    "name": "POST /api/auth/callback/credentials",
+    "method": "POST",
+    "path": "/api/auth/callback/credentials",
+    "category": "support",
+    "dataStrategy": "Login pakai credential test dan csrfToken runtime.",
+    "requestTemplate": {
+      "username": "spv_tes",
+      "password": "<hidden>",
+      "redirect": "false",
+      "csrfToken": "<runtime csrf token>",
+      "callbackUrl": "http://jimms-fe-performance-jimms-v2.apps.ocdev.jasamarga.co.id/login",
+      "json": "true"
+    },
+    "headers": {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Accept": "application/json"
+    }
+  },
+  {
+    "id": "JIMMS_AUTH_SESSION",
+    "name": "GET /api/auth/session",
+    "method": "GET",
+    "path": "/api/auth/session",
+    "category": "support",
+    "dataStrategy": "Ambil user.accessToken untuk Authorization Bearer.",
+    "requestTemplate": {},
+    "headers": {
+      "Accept": "application/json"
+    }
+  },
+  {
+    "id": "JIMMS_REGULAR_INSPECTION_LIST",
+    "name": "GET /v1/regular-inspection filtered-list",
+    "method": "GET",
+    "path": "/v1/regular-inspection",
+    "category": "main",
+    "dataStrategy": "Filter status Verifikasi Tindak Lanjut - ME agar semua checkbox download aktif.",
+    "requestTemplate": {
+      "query": {
+        "status_id[]": 27,
+        "page": 1,
+        "per_page": 5
+      }
+    },
+    "headers": {
+      "Authorization": "Bearer <accessToken>",
+      "x-api-key": "<hidden>",
+      "Accept": "application/json, text/plain, */*"
+    }
+  },
+  {
+    "id": "JIMMS_REGULAR_INSPECTION_EXPORT",
+    "name": "POST /v1/regular-inspection/export/{id}",
+    "method": "POST",
+    "path": "/v1/regular-inspection/export/{inspectionId}",
+    "category": "main",
+    "dataStrategy": "inspectionId diambil dari row hasil filter status_id[]=27 atau JIMMS_DOWNLOAD_INSPECTION_IDS.",
+    "requestTemplate": {
+      "multipart_form_data": [
+        "archive[]=jsa_form",
+        "archive[]=preparation_form",
+        "archive[]=administration_form",
+        "archive[]=documents",
+        "archive[]=maintenance_data",
+        "archive[]=maintenance_stripmap",
+        "archive[]=inspection",
+        "archive[]=stripmap"
+      ]
+    },
+    "headers": {
+      "Authorization": "Bearer <accessToken>",
+      "x-api-key": "<hidden>",
+      "Content-Type": "multipart/form-data",
+      "Accept": "application/json, text/plain, */*"
+    }
+  },
+  {
+    "id": "JIMMS_EXPORT_PROGRESS_STREAM",
+    "name": "GET /v1/regular-inspection/export/{jobId}/progress-stream",
+    "method": "GET",
+    "path": "/v1/regular-inspection/export/{jobId}/progress-stream",
+    "category": "optional",
+    "dataStrategy": "Dipakai runner sebelum K6 dimulai untuk mengambil downloadUrl ZIP dari jobId export.",
+    "requestTemplate": {},
+    "headers": {
+      "Authorization": "Bearer <accessToken>",
+      "x-api-key": "<hidden>",
+      "Accept": "text/event-stream"
+    }
+  },
+  {
+    "id": "JIMMS_EXPORT_DOWNLOAD_FILE",
+    "name": "GET /v1/regular-inspection/export/{jobId}/download",
+    "method": "GET",
+    "path": "/v1/regular-inspection/export/{jobId}/download",
+    "category": "main",
+    "dataStrategy": "Target performance utama. jobId/downloadUrl disiapkan runner, lalu VU hit endpoint ZIP langsung.",
+    "requestTemplate": {},
+    "headers": {
+      "Authorization": "Bearer <accessToken>",
+      "x-api-key": "<hidden>",
+      "Accept": "application/zip, application/octet-stream, */*"
+    }
+  }
+]

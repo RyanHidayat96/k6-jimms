@@ -1,0 +1,19 @@
+{
+  "name": "jimms-k6-performance",
+  "version": "1.0.0",
+  "private": true,
+  "description": "K6 performance tests for JIMMS TAMS Perkerasan Rutin download export.",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "smoke": "node helper/runK6WithEnv.js tests/downloadTest/jimmsDownloadSmoke.js",
+    "load": "node helper/runK6WithEnv.js tests/downloadTest/jimmsDownloadScenarios.js -e JIMMS_PROFILE=load",
+    "stress": "node helper/runK6WithEnv.js tests/downloadTest/jimmsDownloadScenarios.js -e JIMMS_PROFILE=stress",
+    "report:html": "node helper/generateHtml.js",
+    "report:open": "node helper/openLatestHtml.js",
+    "report": "npm run report:html && npm run report:open"
+  },
+  "license": "ISC",
+  "dependencies": {}
+}
