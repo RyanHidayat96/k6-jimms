@@ -15,6 +15,16 @@ const VALID_RESPONSE_RATE_METRIC = 'jimms_valid_response_rate';
 const LOAD_ERROR_RATE_METRIC = 'jimms_load_error_rate';
 const VALID_REQUEST_DURATION_METRIC = 'jimms_valid_req_duration';
 const DATA_PRECONDITION_COUNT_METRIC = 'jimms_data_precondition_count';
+const MAIN_REQUEST_NAMES = [
+    'POST /v1/regular-inspection/export/{id}',
+    'GET /v1/regular-inspection/export/{jobId}/progress-stream',
+    'GET /v1/regular-inspection/export/{jobId}/download',
+];
+const MAIN_CHECK_PREFIXES = [
+    'export job',
+    'progress stream',
+    'zip download',
+];
 
 if (summaryFiles.length === 0) {
     removeStaleOverviewFiles();
@@ -111,7 +121,7 @@ function renderOverviewHtml(reports) {
             const summary = buildReportSummary(report.reportName, report.summary);
             return `<tr>
 <td><a href="${escapeHtml(report.fileName)}">${escapeHtml(displayReportName(report.reportName))}</a></td>
-<td class="${summary.status === 'PASS' ? 'status-pass' : 'status-fail'}">${escapeHtml(summary.status)}</td>
+<td class="${statusClass(summary.status)}">${escapeHtml(summary.status)}</td>
 <td>${escapeHtml(formatNumber(summary.iterations))}</td>
 <td>${escapeHtml(formatNumber(summary.httpRequests))}</td>
 <td>${escapeHtml(formatPercent(summary.validResponseRate))}</td>
@@ -156,17 +166,17 @@ function renderDetailHtml(reportName, summary) {
         ? summary.state.testRunDurationMs
         : undefined;
     const errors = collectApiErrors(metrics);
-    const responseSamples = collectApiResponseSamples();
-    const runtimeEvidence = collectRuntimeEvidence();
-    const status = reportStatus(thresholds, checks);
+    const responseSamples = collectApiResponseSamples(reportName);
+    const runtimeEvidence = collectRuntimeEvidence(reportName);
+    const status = reportStatus(thresholds, checks, metrics);
 
     return page('K6 Performance Report', displayName, `
 <a class="back-link" href="index.html" aria-label="Kembali ke halaman awal">&larr; Kembali ke halaman awal</a>
 <section class="card grid">
-${kpi('Status', status, status === 'PASS' ? 'status-pass' : 'status-fail')}
+${kpi('Status', status, statusClass(status))}
 ${kpi('Duration', durationMs === undefined ? '-' : formatMs(durationMs))}
-${kpi('Valid Response Rate', preferredMetricRate(metrics, VALID_RESPONSE_RATE_METRIC, 'checks'))}
-${kpi('Load Error Rate', preferredMetricRate(metrics, LOAD_ERROR_RATE_METRIC, 'http_req_failed'))}
+${kpi('Valid Response Rate', preferredMetricRate(metrics, VALID_RESPONSE_RATE_METRIC, ''))}
+${kpi('Load Error Rate', preferredMetricRate(metrics, LOAD_ERROR_RATE_METRIC, ''))}
 ${kpi('Data/Precondition', metricValue(metrics[DATA_PRECONDITION_COUNT_METRIC], 'count'))}
 ${kpi('HTTP Requests', metricValue(metrics.http_reqs, 'count'))}
 ${kpi('Iterations', metricValue(metrics.iterations, 'count'))}
@@ -224,6 +234,7 @@ a:hover { text-decoration:underline; }
 .kpi .value { margin-top:6px; font-size:22px; font-weight:700; }
 .status-pass { color:var(--pass); }
 .status-fail { color:var(--fail); }
+.status-skipped { color:#8a5a00; }
 table { width:100%; border-collapse:collapse; font-size:14px; }
 th { background:#eaf2f9; text-align:left; color:#123b5d; }
 th, td { border:1px solid var(--line); padding:10px 12px; vertical-align:top; }
@@ -236,6 +247,7 @@ pre { margin:8px 0 0; padding:10px; background:#0f172a; color:#e2e8f0; border-ra
 .pill { display:inline-block; padding:4px 10px; border-radius:999px; font-weight:700; font-size:12px; letter-spacing:.03em; }
 .pill-pass { color:#065f46; background:#d1fae5; }
 .pill-fail { color:#991b1b; background:#fee2e2; }
+.pill-skipped { color:#713f12; background:#fef3c7; }
 .summary-list { margin:0; padding-left:18px; line-height:1.55; }
 </style>`;
 }
@@ -246,15 +258,15 @@ function buildReportSummary(reportName, summary) {
     const thresholds = collectThresholds(metrics);
     return {
         reportName,
-        status: reportStatus(thresholds, checks),
-        validResponseRate: preferredMetricPercentNumber(metrics, VALID_RESPONSE_RATE_METRIC, 'checks'),
-        loadErrorRate: preferredMetricPercentNumber(metrics, LOAD_ERROR_RATE_METRIC, 'http_req_failed'),
+        status: reportStatus(thresholds, checks, metrics),
+        validResponseRate: preferredMetricPercentNumber(metrics, VALID_RESPONSE_RATE_METRIC, ''),
+        loadErrorRate: preferredMetricPercentNumber(metrics, LOAD_ERROR_RATE_METRIC, ''),
         dataPreconditions: metricCounterTotal(metrics, DATA_PRECONDITION_COUNT_METRIC),
         httpRequests: metricNumber(metrics.http_reqs, 'count'),
         iterations: metricNumber(metrics.iterations, 'count'),
-        validP95: preferredMetricNumber(metrics, VALID_REQUEST_DURATION_METRIC, 'http_req_duration', 'p(95)'),
+        validP95: preferredMetricNumber(metrics, VALID_REQUEST_DURATION_METRIC, '', 'p(95)'),
         max: metricNumber(metrics.http_req_duration, 'max'),
-        failedChecks: checks.filter((item) => item.fails > 0).sort((a, b) => b.fails - a.fails),
+        failedChecks: checks.filter((item) => isMainCheck(item.name) && item.fails > 0).sort((a, b) => b.fails - a.fails),
         errors: collectApiErrors(metrics),
     };
 }
@@ -267,7 +279,9 @@ function runConfigurationForReport(summary, displayName, metrics, thresholds, du
         ['FE Base URL', safeConfigValue(config.feBaseUrl || env.JIMMS_FE_BASE_URL || '-')],
         ['API Base URL', safeConfigValue(config.apiBaseUrl || env.JIMMS_API_BASE_URL || '-')],
         ['Status filter', safeConfigValue(config.statusFilter || `status_id[]=${env.JIMMS_REGULAR_INSPECTION_STATUS_ID || 27}`)],
-        ['Archive scenarios', safeConfigValue(config.archiveScenarios || env.JIMMS_DOWNLOAD_ARCHIVE_SCENARIOS || 'all')],
+        ['Archive selection', safeConfigValue(config.archiveSelection || archiveSelectionFromEnv())],
+        ['All archive checkbox', safeConfigValue(config.downloadAllArchive || env.JIMMS_DOWNLOAD_ALL_ARCHIVE || 'true')],
+        ['Legacy archive scenarios', safeConfigValue(config.archiveScenarios || env.JIMMS_DOWNLOAD_ARCHIVE_SCENARIOS || '-')],
         ['Download flow mode', safeConfigValue(config.downloadFlowMode || env.JIMMS_DOWNLOAD_FLOW_MODE || 'real-user')],
         ['Executor', safeConfigValue(config.executor)],
         ['Configured VU', safeConfigValue(config.vus || config.targetVus)],
@@ -294,24 +308,28 @@ function runConfigurationForReport(summary, displayName, metrics, thresholds, du
 }
 
 function conclusionHtml(metrics, checks, thresholds, durationMs, status) {
-    const failedChecks = checks.filter((item) => item.fails > 0);
-    const failedThresholds = thresholds.filter((item) => item.ok === false);
-    const validRate = preferredMetricPercentNumber(metrics, VALID_RESPONSE_RATE_METRIC, 'checks');
-    const loadErrorRate = preferredMetricPercentNumber(metrics, LOAD_ERROR_RATE_METRIC, 'http_req_failed');
-    const validP95 = preferredMetricNumber(metrics, VALID_REQUEST_DURATION_METRIC, 'http_req_duration', 'p(95)');
+    const failedChecks = checks.filter((item) => isMainCheck(item.name) && item.fails > 0);
+    const supportFailedChecks = checks.filter((item) => !isMainCheck(item.name) && item.fails > 0);
+    const failedThresholds = thresholds.filter((item) => isMainThreshold(item.metricName) && item.ok === false);
+    const validRate = preferredMetricPercentNumber(metrics, VALID_RESPONSE_RATE_METRIC, '');
+    const loadErrorRate = preferredMetricPercentNumber(metrics, LOAD_ERROR_RATE_METRIC, '');
+    const validP95 = preferredMetricNumber(metrics, VALID_REQUEST_DURATION_METRIC, '', 'p(95)');
     const lead = status === 'PASS'
-        ? 'Run lulus threshold yang dikonfigurasi.'
-        : 'Run belum lulus. Lihat failed checks, error summary, dan threshold yang merah.';
+        ? 'Download flow utama lulus.'
+        : status === 'SKIPPED'
+            ? 'Download flow utama tidak dinilai karena API pendukung/precondition gagal atau tidak ada main request.'
+            : 'Download flow utama gagal. Lihat failed checks utama, error summary, dan threshold utama yang merah.';
 
     return `<div class="conclusion">
-<p class="conclusion-lead"><span class="pill ${status === 'PASS' ? 'pill-pass' : 'pill-fail'}">${status}</span> ${escapeHtml(lead)}</p>
+<p class="conclusion-lead"><span class="pill ${pillClass(status)}">${status}</span> ${escapeHtml(lead)}</p>
 <ul class="summary-list">
 <li>Duration: ${escapeHtml(durationMs === undefined ? '-' : formatMs(durationMs))}</li>
 <li>Valid response rate: ${escapeHtml(formatPercent(validRate))}</li>
 <li>Load error rate: ${escapeHtml(formatPercent(loadErrorRate))}</li>
 <li>Valid traffic P95: ${escapeHtml(formatMsReadable(validP95))}</li>
-<li>Failed checks: ${escapeHtml(String(failedChecks.length))}</li>
-<li>Failed thresholds: ${escapeHtml(String(failedThresholds.length))}</li>
+<li>Failed main checks: ${escapeHtml(String(failedChecks.length))}</li>
+<li>Failed support/precondition checks: ${escapeHtml(String(supportFailedChecks.length))}</li>
+<li>Failed main thresholds: ${escapeHtml(String(failedThresholds.length))}</li>
 </ul>
 </div>`;
 }
@@ -520,8 +538,8 @@ function collectApiErrors(metrics) {
         .sort((left, right) => right.count - left.count);
 }
 
-function collectApiResponseSamples() {
-    return collectDebugJson('[K6-API-RESPONSE-SAMPLE] ').map((item) => ({
+function collectApiResponseSamples(reportName) {
+    return collectDebugJson('[K6-API-RESPONSE-SAMPLE] ', reportName).map((item) => ({
         request: item.request || 'N/A',
         result: item.result || 'N/A',
         category: item.category || 'N/A',
@@ -532,8 +550,8 @@ function collectApiResponseSamples() {
     }));
 }
 
-function collectRuntimeEvidence() {
-    return collectDebugJson('[K6-RUNTIME-EVIDENCE] ').map((item) => ({
+function collectRuntimeEvidence(reportName) {
+    return collectDebugJson('[K6-RUNTIME-EVIDENCE] ', reportName).map((item) => ({
         endpointId: item.endpoint_id || 'N/A',
         request: item.request || 'N/A',
         steps: Array.isArray(item.steps) ? item.steps : [],
@@ -541,13 +559,9 @@ function collectRuntimeEvidence() {
     }));
 }
 
-function collectDebugJson(marker) {
+function collectDebugJson(marker, reportName) {
     if (!fs.existsSync(debugDir)) return [];
-    const files = fs.readdirSync(debugDir)
-        .filter((file) => file.endsWith('.log'))
-        .map((file) => ({ fullPath: path.join(debugDir, file), mtimeMs: fs.statSync(path.join(debugDir, file)).mtimeMs }))
-        .sort((left, right) => right.mtimeMs - left.mtimeMs)
-        .slice(0, 30);
+    const files = debugLogFilesForReport(reportName);
     const entries = [];
 
     files.forEach((file) => {
@@ -564,6 +578,30 @@ function collectDebugJson(marker) {
     });
 
     return dedupeObjects(entries);
+}
+
+function debugLogFilesForReport(reportName) {
+    const latestPath = path.join(debugDir, `${reportName}-latest-log.json`);
+    if (reportName && fs.existsSync(latestPath)) {
+        try {
+            const latest = readJsonFile(latestPath);
+            const latestFiles = [latest.stderrLog, latest.stdoutLog]
+                .filter(Boolean)
+                .filter((filePath) => fs.existsSync(filePath))
+                .map((filePath) => ({ fullPath: filePath, mtimeMs: fs.statSync(filePath).mtimeMs }));
+            if (latestFiles.length > 0) return latestFiles;
+        } catch (error) {
+            // Fallback to matching log names below.
+        }
+    }
+
+    const prefix = reportName ? `${reportName}-` : '';
+    return fs.readdirSync(debugDir)
+        .filter((file) => file.endsWith('.log'))
+        .filter((file) => !prefix || file.startsWith(prefix))
+        .map((file) => ({ fullPath: path.join(debugDir, file), mtimeMs: fs.statSync(path.join(debugDir, file)).mtimeMs }))
+        .sort((left, right) => right.mtimeMs - left.mtimeMs)
+        .slice(0, 2);
 }
 
 function extractDebugJsonPayload(line, marker) {
@@ -655,10 +693,33 @@ function compareThresholds(left, right) {
     return `${left.metricName} ${left.rule}`.localeCompare(`${right.metricName} ${right.rule}`);
 }
 
-function reportStatus(thresholds, checks) {
-    if ((thresholds || []).some((item) => item.ok === false)) return 'FAIL';
-    if ((checks || []).some((item) => item.fails > 0)) return 'FAIL';
+function reportStatus(thresholds, checks, metrics) {
+    const mainChecks = (checks || []).filter((item) => isMainCheck(item.name));
+    const hasMainCheckSample = mainChecks.some((item) => item.passes > 0 || item.fails > 0);
+    const hasMainMetricSample = hasAnyMainMetricSample(metrics);
+
+    if (!hasMainCheckSample && !hasMainMetricSample) return 'SKIPPED';
+    if (mainChecks.some((item) => item.fails > 0)) return 'FAIL';
+    if ((thresholds || []).some((item) => isMainThreshold(item.metricName) && item.ok === false)) return 'FAIL';
     return 'PASS';
+}
+
+function isMainCheck(name) {
+    const normalized = String(name || '').toLowerCase();
+    return MAIN_CHECK_PREFIXES.some((prefix) => normalized.includes(prefix));
+}
+
+function isMainThreshold(metricName) {
+    const name = String(metricName || '');
+    if ([VALID_RESPONSE_RATE_METRIC, LOAD_ERROR_RATE_METRIC, VALID_REQUEST_DURATION_METRIC].includes(name)) return true;
+    return MAIN_REQUEST_NAMES.some((requestName) => name.includes(`request:${requestName}`));
+}
+
+function hasAnyMainMetricSample(metrics) {
+    return MAIN_REQUEST_NAMES.some((requestName) => {
+        const metric = metrics && metrics[`${VALID_REQUEST_DURATION_METRIC}{request:${requestName}}`];
+        return hasTrendSamples(metric);
+    });
 }
 
 function thresholdRuleFor(thresholds, metricName, rulePart = '') {
@@ -684,18 +745,23 @@ function metricTable(metric) {
 
 function checksTable(checks) {
     if (!checks || checks.length === 0) return '<p class="small">No checks.</p>';
-    const rows = checks.map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${formatNumber(item.passes)}</td><td>${formatNumber(item.fails)}</td><td class="${item.fails === 0 ? 'status-pass' : 'status-fail'}">${item.fails === 0 ? 'PASS' : 'FAIL'}</td></tr>`).join('');
-    return `<table><thead><tr><th>Check</th><th>Pass</th><th>Fail</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`;
+    const rows = checks.map((item) => {
+        const impact = isMainCheck(item.name) ? 'Main' : 'Support / Precondition';
+        const status = item.fails === 0 ? 'PASS' : isMainCheck(item.name) ? 'FAIL' : 'SKIPPED';
+        return `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(impact)}</td><td>${formatNumber(item.passes)}</td><td>${formatNumber(item.fails)}</td><td class="${statusClass(status)}">${status}</td></tr>`;
+    }).join('');
+    return `<table><thead><tr><th>Check</th><th>Impact</th><th>Pass</th><th>Fail</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function thresholdsTable(thresholds) {
     if (!thresholds || thresholds.length === 0) return '<p class="small">No thresholds.</p>';
     const rows = thresholds.map((item) => {
         const status = item.ok === undefined ? 'N/A' : item.ok ? 'PASS' : 'FAIL';
-        const statusClass = item.ok === undefined ? '' : item.ok ? 'status-pass' : 'status-fail';
-        return `<tr><td><code>${escapeHtml(item.metricName)}</code></td><td>${escapeHtml(item.rule)}</td><td class="${statusClass}">${status}</td></tr>`;
+        const impact = isMainThreshold(item.metricName) ? 'Main' : 'Support / Precondition';
+        const className = item.ok === undefined ? '' : statusClass(status);
+        return `<tr><td><code>${escapeHtml(item.metricName)}</code></td><td>${escapeHtml(item.rule)}</td><td>${escapeHtml(impact)}</td><td class="${className}">${status}</td></tr>`;
     }).join('');
-    return `<table><thead><tr><th>Metric</th><th>Rule</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`;
+    return `<table><thead><tr><th>Metric</th><th>Rule</th><th>Impact</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function keyMetricsTable(metrics) {
@@ -747,9 +813,40 @@ function kpi(label, value, valueClass = '') {
     return `<div class="kpi"><div class="label">${escapeHtml(label)}</div><div class="value ${valueClass}">${escapeHtml(String(value))}</div></div>`;
 }
 
+function statusClass(status) {
+    if (status === 'PASS') return 'status-pass';
+    if (status === 'SKIPPED') return 'status-skipped';
+    return 'status-fail';
+}
+
+function pillClass(status) {
+    if (status === 'PASS') return 'pill-pass';
+    if (status === 'SKIPPED') return 'pill-skipped';
+    return 'pill-fail';
+}
+
 function safeConfigValue(value) {
     if (value === undefined || value === null || value === '') return '-';
     return String(value);
+}
+
+function archiveSelectionFromEnv() {
+    if (String(env.JIMMS_DOWNLOAD_ALL_ARCHIVE || 'true').toLowerCase() === 'true') return 'all checkbox';
+
+    const labels = [
+        ['JIMMS_DOWNLOAD_CHECK_FORM_JSA', 'Form JSA'],
+        ['JIMMS_DOWNLOAD_CHECK_FORM_PERSIAPAN', 'Form Persiapan'],
+        ['JIMMS_DOWNLOAD_CHECK_DATA_ADMINISTRASI', 'Data Administrasi'],
+        ['JIMMS_DOWNLOAD_CHECK_DATA_INSPEKSI', 'Data Inspeksi Rutin'],
+        ['JIMMS_DOWNLOAD_CHECK_DOKUMENTASI', 'Dokumentasi Inspeksi Rutin'],
+        ['JIMMS_DOWNLOAD_CHECK_STRIPMAP_INSPEKSI', 'Stripmap Inspeksi Rutin'],
+        ['JIMMS_DOWNLOAD_CHECK_STRIPMAP_PENANGANAN', 'Stripmap Penanganan Inspeksi Rutin'],
+        ['JIMMS_DOWNLOAD_CHECK_DATA_PENANGANAN', 'Data Penanganan Inspeksi Rutin'],
+    ]
+        .filter(([key]) => String(env[key] || '').toLowerCase() === 'true')
+        .map(([, label]) => label);
+
+    return labels.length > 0 ? labels.join(', ') : env.JIMMS_DOWNLOAD_ARCHIVE_SCENARIOS || '-';
 }
 
 function preferredMetricRate(metrics, primaryName, fallbackName) {
@@ -802,6 +899,7 @@ function displayErrorCategory(value) {
     const category = String(value || 'N/A');
     const labels = {
         passed: 'Passed',
+        support_skipped: 'Support / Skipped',
         data_precondition: 'Data / Precondition',
         load_capacity: 'Load / Capacity',
         auth_security: 'Auth / Security',

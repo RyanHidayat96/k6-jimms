@@ -8,6 +8,9 @@ function boolEnv(name, defaultValue = false) {
     return String(rawValue).toLowerCase() === 'true';
 }
 
+const downloadArchiveScenarios = __ENV.JIMMS_DOWNLOAD_ARCHIVE_SCENARIOS || '';
+const downloadAllArchiveDefault = downloadArchiveScenarios ? false : true;
+
 export const environment = {
     feBaseUrl: stripTrailingSlash(__ENV.JIMMS_FE_BASE_URL || __ENV.BASE_URL || ''),
     apiBaseUrl: stripTrailingSlash(__ENV.JIMMS_API_BASE_URL || __ENV.API_BASE_URL || ''),
@@ -25,7 +28,16 @@ export const environment = {
     downloadJobIds: __ENV.JIMMS_DOWNLOAD_JOB_IDS || '',
     downloadFlowMode: __ENV.JIMMS_DOWNLOAD_FLOW_MODE || 'real-user',
     downloadRowStrategy: __ENV.JIMMS_DOWNLOAD_ROW_STRATEGY || 'rotate',
-    downloadArchiveScenarios: __ENV.JIMMS_DOWNLOAD_ARCHIVE_SCENARIOS || 'all',
+    downloadArchiveScenarios,
+    downloadAllArchive: boolEnv('JIMMS_DOWNLOAD_ALL_ARCHIVE', downloadAllArchiveDefault),
+    downloadCheckFormJsa: boolEnv('JIMMS_DOWNLOAD_CHECK_FORM_JSA', false),
+    downloadCheckFormPersiapan: boolEnv('JIMMS_DOWNLOAD_CHECK_FORM_PERSIAPAN', false),
+    downloadCheckDataAdministrasi: boolEnv('JIMMS_DOWNLOAD_CHECK_DATA_ADMINISTRASI', false),
+    downloadCheckDataInspeksi: boolEnv('JIMMS_DOWNLOAD_CHECK_DATA_INSPEKSI', false),
+    downloadCheckDokumentasi: boolEnv('JIMMS_DOWNLOAD_CHECK_DOKUMENTASI', false),
+    downloadCheckStripmapInspeksi: boolEnv('JIMMS_DOWNLOAD_CHECK_STRIPMAP_INSPEKSI', false),
+    downloadCheckStripmapPenanganan: boolEnv('JIMMS_DOWNLOAD_CHECK_STRIPMAP_PENANGANAN', false),
+    downloadCheckDataPenanganan: boolEnv('JIMMS_DOWNLOAD_CHECK_DATA_PENANGANAN', false),
     randomizeScenario: boolEnv('JIMMS_DOWNLOAD_RANDOMIZE_SCENARIO', false),
     exportTimeout: __ENV.JIMMS_EXPORT_TIMEOUT || '120s',
     downloadPrepareJobs: __ENV.JIMMS_DOWNLOAD_PREPARE_JOBS || '1',

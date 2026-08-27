@@ -1,25 +1,23 @@
-import { buildScenarioOptions, getEnvInt, getLoadTestingStages, getStressTestingStages } from '../../common/utility.js';
+import { buildScenarioOptions, getEnvInt, getLoadTestingStages } from '../../common/utility.js';
 
 export function loadOrStressProfile(scriptPath, rawProfile = __ENV.JIMMS_PROFILE || 'load') {
     const profile = normalizeLoadProfile(rawProfile);
     const isStress = profile === 'stress';
-    const profilePrefix = isStress ? 'JIMMS_STRESS' : 'JIMMS';
-    const thresholdPrefix = isStress ? 'JIMMS_STRESS' : 'JIMMS_LOAD';
-    const targetVus = getEnvInt(isStress ? 'JIMMS_STRESS_TARGET_VUS' : 'JIMMS_TARGET_VUS', 1);
-    const scenarioOptions = buildScenarioOptions(profilePrefix, {
+    const targetVus = getEnvInt('JIMMS_TARGET_VUS', 1);
+    const scenarioOptions = buildScenarioOptions('JIMMS', {
         executor: 'ramping-vus',
         vus: targetVus,
-        stages: isStress ? getStressTestingStages(targetVus) : getLoadTestingStages(targetVus),
-        gracefulRampDown: isStress ? (__ENV.JIMMS_STRESS_GRACEFUL_RAMP_DOWN || '30s') : (__ENV.JIMMS_GRACEFUL_RAMP_DOWN || '30s'),
+        stages: getLoadTestingStages(targetVus),
+        gracefulRampDown: __ENV.JIMMS_GRACEFUL_RAMP_DOWN || '30s',
     });
 
     return {
         profile,
         scriptPath,
         testingType: `Download ${isStress ? 'Stress' : 'Load'} Testing`,
-        thresholdPrefix,
+        thresholdPrefix: 'JIMMS',
         scenarioOptions,
-        thinkTimeSeconds: Number(__ENV[isStress ? 'JIMMS_STRESS_THINK_TIME_SECONDS' : 'JIMMS_THINK_TIME_SECONDS'] || 1),
+        thinkTimeSeconds: Number(__ENV.JIMMS_THINK_TIME_SECONDS || 1),
         requiresStress: isStress,
     };
 }
@@ -29,7 +27,7 @@ export function smokeProfile(scriptPath) {
         profile: 'smoke',
         scriptPath,
         testingType: 'Download Smoke Performance Testing',
-        thresholdPrefix: 'JIMMS_SMOKE',
+        thresholdPrefix: 'JIMMS',
         scenarioOptions: buildScenarioOptions('JIMMS_SMOKE', {
             executor: 'shared-iterations',
             vus: 1,

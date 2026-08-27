@@ -10,6 +10,8 @@ const loggedResponseSampleKeys = {};
 
 export function recordApiMetrics(response, requestName, options = {}) {
     recordApiResponseSample(response, requestName, options);
+    if (options.skipPerformance === true) return;
+
     recordApiError(response, requestName, options);
     recordPerformanceMetrics(response, requestName, options);
 }

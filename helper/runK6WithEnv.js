@@ -48,6 +48,17 @@ const ARCHIVE_LABELS = {
     maintenance_data: 'Data Penanganan Inspeksi Rutin',
 };
 
+const CHECKBOX_ARCHIVE_ENV = [
+    ['JIMMS_DOWNLOAD_CHECK_FORM_JSA', 'jsa_form'],
+    ['JIMMS_DOWNLOAD_CHECK_FORM_PERSIAPAN', 'preparation_form'],
+    ['JIMMS_DOWNLOAD_CHECK_DATA_ADMINISTRASI', 'administration_form'],
+    ['JIMMS_DOWNLOAD_CHECK_DATA_INSPEKSI', 'inspection'],
+    ['JIMMS_DOWNLOAD_CHECK_DOKUMENTASI', 'documents'],
+    ['JIMMS_DOWNLOAD_CHECK_STRIPMAP_INSPEKSI', 'stripmap'],
+    ['JIMMS_DOWNLOAD_CHECK_STRIPMAP_PENANGANAN', 'maintenance_stripmap'],
+    ['JIMMS_DOWNLOAD_CHECK_DATA_PENANGANAN', 'maintenance_data'],
+];
+
 if (!scriptPath) {
     console.error('Usage: node helper/runK6WithEnv.js <k6-script> [k6-args...]');
     process.exit(1);
@@ -483,9 +494,31 @@ function inspectionIdCandidates(listBody) {
 }
 
 function archiveScenarioByIndex(index) {
+    const checkboxScenario = archiveScenarioFromCheckboxes();
+    if (checkboxScenario) return checkboxScenario;
+
     const names = splitCsv(env.JIMMS_DOWNLOAD_ARCHIVE_SCENARIOS);
-    const scenarioNames = names.length > 0 ? names : ['all'];
-    return archiveScenarioByName(scenarioNames[index % scenarioNames.length]);
+    if (names.length === 0) {
+        throw new Error('No download checkbox selected. Set JIMMS_DOWNLOAD_ALL_ARCHIVE=true or set at least one JIMMS_DOWNLOAD_CHECK_* value to true.');
+    }
+
+    return archiveScenarioByName(names[index % names.length]);
+}
+
+function archiveScenarioFromCheckboxes() {
+    const allDefault = env.JIMMS_DOWNLOAD_ARCHIVE_SCENARIOS ? false : true;
+    if (boolEnv('JIMMS_DOWNLOAD_ALL_ARCHIVE', allDefault)) return archiveScenarioByName('all');
+
+    const archives = CHECKBOX_ARCHIVE_ENV
+        .filter(([envKey]) => boolEnv(envKey, false))
+        .map(([, archiveValue]) => archiveValue);
+
+    if (archives.length === 0) return null;
+
+    return {
+        name: archives.join('+'),
+        archives,
+    };
 }
 
 function archiveScenarioByName(rawName) {
@@ -671,6 +704,12 @@ function joinUrl(baseUrl, pathname) {
 
 function splitCsv(value) {
     return String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function boolEnv(name, defaultValue = false) {
+    const rawValue = env[name];
+    if (rawValue === undefined || rawValue === '') return defaultValue;
+    return String(rawValue).toLowerCase() === 'true';
 }
 
 function durationToMs(value, fallbackMs) {

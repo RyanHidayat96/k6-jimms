@@ -144,7 +144,7 @@ JIMMS_PREPARE_DOWNLOAD_BEFORE_RUN=false
 JIMMS_SETUP_TIMEOUT=5m
 ```
 
-`real-user` mengikuti UI: `POST export` -> job queued -> tunggu `progress-stream` -> `GET download`. Jika `progress-stream` stuck dan tidak memberi `downloadUrl`, test gagal. `download-only` dipakai jika ingin langsung hit URL download dari `JIMMS_DOWNLOAD_DIRECT_URLS` atau `JIMMS_DOWNLOAD_JOB_IDS`.
+`real-user` mengikuti UI: `POST export` -> job queued -> tunggu `progress-stream` -> `GET download`. Jika `progress-stream` stuck dan tidak memberi `downloadUrl` sampai `JIMMS_DOWNLOAD_PROGRESS_TIMEOUT`, test gagal. `download-only` dipakai jika ingin langsung hit URL download dari `JIMMS_DOWNLOAD_DIRECT_URLS` atau `JIMMS_DOWNLOAD_JOB_IDS`.
 
 ## Command
 
@@ -171,39 +171,40 @@ npm run report:open
 
 ## Variasi Checkbox
 
-Default load test menjalankan variasi ini bergilir per iteration:
+Default `.env` mencentang semua dokumen:
 
 ```env
-JIMMS_DOWNLOAD_ARCHIVE_SCENARIOS=all,preparation,administration,inspection,documentation,stripmap,maintenance
+JIMMS_DOWNLOAD_ALL_ARCHIVE=true
 ```
 
-| Scenario | Checkbox |
-| --- | --- |
-| `all` | Semua checkbox aktif |
-| `preparation` | Form JSA + Form Persiapan |
-| `jsa` | Form JSA |
-| `preparation-form` | Form Persiapan |
-| `administration` | Data Administrasi |
-| `inspection` | Data Inspeksi Rutin |
-| `documentation` | Dokumentasi Inspeksi Rutin |
-| `stripmap` | Stripmap Inspeksi Rutin |
-| `maintenance` | Data Penanganan + Stripmap Penanganan |
-| `maintenance-data` | Data Penanganan Inspeksi Rutin |
-| `maintenance-stripmap` | Stripmap Penanganan Inspeksi Rutin |
+Jika ingin pilih checkbox satu per satu, set `JIMMS_DOWNLOAD_ALL_ARCHIVE=false`, lalu isi `true` untuk centang dan `false` untuk uncheck:
 
-Jalankan satu kondisi saja:
-
-```powershell
-$env:JIMMS_DOWNLOAD_ARCHIVE_SCENARIOS="all"
-npm run load
+```env
+JIMMS_DOWNLOAD_ALL_ARCHIVE=false
+JIMMS_DOWNLOAD_CHECK_FORM_JSA=true
+JIMMS_DOWNLOAD_CHECK_FORM_PERSIAPAN=false
+JIMMS_DOWNLOAD_CHECK_DATA_ADMINISTRASI=true
+JIMMS_DOWNLOAD_CHECK_DATA_INSPEKSI=true
+JIMMS_DOWNLOAD_CHECK_DOKUMENTASI=false
+JIMMS_DOWNLOAD_CHECK_STRIPMAP_INSPEKSI=true
+JIMMS_DOWNLOAD_CHECK_STRIPMAP_PENANGANAN=false
+JIMMS_DOWNLOAD_CHECK_DATA_PENANGANAN=false
 ```
 
-Custom raw archive juga bisa:
+Mapping checkbox ke `archive[]` API:
 
-```powershell
-$env:JIMMS_DOWNLOAD_ARCHIVE_SCENARIOS="jsa_form+inspection+stripmap"
-npm run load
-```
+| Env | Checkbox UI | Value API |
+| --- | --- | --- |
+| `JIMMS_DOWNLOAD_CHECK_FORM_JSA` | Form JSA | `jsa_form` |
+| `JIMMS_DOWNLOAD_CHECK_FORM_PERSIAPAN` | Form Persiapan | `preparation_form` |
+| `JIMMS_DOWNLOAD_CHECK_DATA_ADMINISTRASI` | Data Administrasi | `administration_form` |
+| `JIMMS_DOWNLOAD_CHECK_DATA_INSPEKSI` | Data Inspeksi Rutin | `inspection` |
+| `JIMMS_DOWNLOAD_CHECK_DOKUMENTASI` | Dokumentasi Inspeksi Rutin | `documents` |
+| `JIMMS_DOWNLOAD_CHECK_STRIPMAP_INSPEKSI` | Stripmap Inspeksi Rutin | `stripmap` |
+| `JIMMS_DOWNLOAD_CHECK_STRIPMAP_PENANGANAN` | Stripmap Penanganan Inspeksi Rutin | `maintenance_stripmap` |
+| `JIMMS_DOWNLOAD_CHECK_DATA_PENANGANAN` | Data Penanganan Inspeksi Rutin | `maintenance_data` |
+
+`JIMMS_DOWNLOAD_ALL_ARCHIVE=true` selalu mengabaikan parameter per checkbox. Legacy `JIMMS_DOWNLOAD_ARCHIVE_SCENARIOS` masih didukung jika dibutuhkan, tetapi tidak perlu dipakai untuk flow checkbox biasa.
 
 ## Data Test
 
@@ -268,6 +269,31 @@ Summary JSON dan HTML disimpan di:
 
 ```text
 test-results/reports/k6
+```
+
+Kriteria status report:
+
+| Status | Arti |
+| --- | --- |
+| `PASS` | API utama download lulus: `POST export`, `GET progress-stream`, dan `GET download` valid. |
+| `FAIL` | API utama download gagal, misalnya job stuck `WAITING`, tidak ada `downloadUrl`, HTTP error, atau body ZIP tidak valid. |
+| `SKIPPED` | API pendukung/precondition gagal sebelum flow utama bisa dinilai, misalnya login gagal atau data list kosong. |
+
+API pendukung/precondition tidak menentukan `FAIL`:
+
+```text
+GET /api/auth/csrf
+POST /api/auth/callback/credentials
+GET /api/auth/session
+GET /v1/regular-inspection filtered-list
+```
+
+API utama penentu `PASS/FAIL`:
+
+```text
+POST /v1/regular-inspection/export/{id}
+GET /v1/regular-inspection/export/{jobId}/progress-stream
+GET /v1/regular-inspection/export/{jobId}/download
 ```
 
 Metric utama:

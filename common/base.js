@@ -86,7 +86,9 @@ function buildReportConfig(stageList, testingType, scriptPath) {
         feBaseUrl: environment.feBaseUrl,
         apiBaseUrl: environment.apiBaseUrl,
         statusFilter: `status_id[]=${environment.regularInspectionStatusId}`,
+        archiveSelection: downloadArchiveSelectionLabel(),
         archiveScenarios: environment.downloadArchiveScenarios,
+        downloadAllArchive: environment.downloadAllArchive ? 'true' : 'false',
         downloadFlowMode: environment.downloadFlowMode,
         executor: envValue(`${prefix}_EXECUTOR`) || envValue('JIMMS_EXECUTOR'),
         targetVus: envValue(`${prefix}_TARGET_VUS`) || envValue('JIMMS_TARGET_VUS'),
@@ -116,6 +118,22 @@ function buildReportConfig(stageList, testingType, scriptPath) {
         },
         stageList,
     };
+}
+
+function downloadArchiveSelectionLabel() {
+    if (environment.downloadAllArchive) return 'all checkbox';
+
+    const labels = [];
+    if (environment.downloadCheckFormJsa) labels.push('Form JSA');
+    if (environment.downloadCheckFormPersiapan) labels.push('Form Persiapan');
+    if (environment.downloadCheckDataAdministrasi) labels.push('Data Administrasi');
+    if (environment.downloadCheckDataInspeksi) labels.push('Data Inspeksi Rutin');
+    if (environment.downloadCheckDokumentasi) labels.push('Dokumentasi Inspeksi Rutin');
+    if (environment.downloadCheckStripmapInspeksi) labels.push('Stripmap Inspeksi Rutin');
+    if (environment.downloadCheckStripmapPenanganan) labels.push('Stripmap Penanganan Inspeksi Rutin');
+    if (environment.downloadCheckDataPenanganan) labels.push('Data Penanganan Inspeksi Rutin');
+
+    return labels.length > 0 ? labels.join(', ') : environment.downloadArchiveScenarios || '-';
 }
 
 function profileFromTestingType(testingType) {

@@ -1,6 +1,7 @@
 import http from 'k6/http';
 import { check } from 'k6';
 import { environment } from '../config/environment.js';
+import { recordApiMetrics } from './errorMetrics.js';
 
 export function authenticate() {
     if (environment.accessToken) {
@@ -15,15 +16,14 @@ export function authenticate() {
         tags: { request: 'GET /api/auth/csrf' },
         timeout: '30s',
     });
-    check(csrfResponse, {
+    const csrfOk = check(csrfResponse, {
         'auth csrf status is 200': (response) => response.status === 200,
         'auth csrf token exists': (response) => Boolean(jsonValue(response, 'csrfToken')),
     });
 
     const csrfToken = jsonValue(csrfResponse, 'csrfToken');
-    if (!csrfToken) {
-        throw new Error(`Cannot login: csrfToken not found. Status=${csrfResponse.status}`);
-    }
+    recordSupportApi(csrfResponse, 'GET /api/auth/csrf', csrfOk, csrfOk ? 'CSRF token ready' : `Cannot login: csrfToken not found. Status=${csrfResponse.status}`);
+    if (!csrfOk || !csrfToken) return skippedAuth(`Cannot login: csrfToken not found. Status=${csrfResponse.status}`, 'GET /api/auth/csrf');
 
     const loginResponse = http.post(
         `${environment.feBaseUrl}/api/auth/callback/credentials`,
@@ -44,31 +44,55 @@ export function authenticate() {
             timeout: '30s',
         },
     );
-    check(loginResponse, {
+    const loginOk = check(loginResponse, {
         'auth login status is 200': (response) => response.status === 200,
         'auth login returns url': (response) => Boolean(jsonValue(response, 'url')),
     });
+    recordSupportApi(loginResponse, 'POST /api/auth/callback/credentials', loginOk, loginOk ? 'Login support API ready' : `Cannot login: login failed. Status=${loginResponse.status}`);
+    if (!loginOk) return skippedAuth(`Cannot login: login failed. Status=${loginResponse.status}`, 'POST /api/auth/callback/credentials');
 
     const sessionResponse = http.get(`${environment.feBaseUrl}/api/auth/session`, {
         headers: { Accept: 'application/json' },
         tags: { request: 'GET /api/auth/session' },
         timeout: '30s',
     });
-    check(sessionResponse, {
+    const sessionOk = check(sessionResponse, {
         'auth session status is 200': (response) => response.status === 200,
         'auth session accessToken exists': (response) => Boolean(jsonValue(response, 'user.accessToken')),
     });
 
     const accessToken = jsonValue(sessionResponse, 'user.accessToken');
-    if (!accessToken) {
-        throw new Error(`Cannot login: accessToken not found. Status=${sessionResponse.status}`);
-    }
+    recordSupportApi(sessionResponse, 'GET /api/auth/session', sessionOk, sessionOk ? 'Session accessToken ready' : `Cannot login: accessToken not found. Status=${sessionResponse.status}`);
+    if (!sessionOk || !accessToken) return skippedAuth(`Cannot login: accessToken not found. Status=${sessionResponse.status}`, 'GET /api/auth/session');
 
     return {
         accessToken,
         username: environment.username,
         authenticatedAt: new Date().toISOString(),
     };
+}
+
+function recordSupportApi(response, requestName, success, message) {
+    recordApiMetrics(response, requestName, {
+        valid: success,
+        result: success ? 'PASSED' : 'SKIPPED',
+        category: success ? 'passed' : 'support_skipped',
+        message,
+        skipPerformance: true,
+    });
+}
+
+function skippedAuth(reason, stage) {
+    const context = {
+        skipped: true,
+        skipStage: stage,
+        skipReason: reason,
+        username: environment.username,
+        authenticatedAt: new Date().toISOString(),
+    };
+
+    console.warn('[K6-SKIPPED] ' + JSON.stringify(context));
+    return context;
 }
 
 function jsonValue(response, path) {

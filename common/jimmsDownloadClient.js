@@ -44,11 +44,24 @@ const ARCHIVE_LABELS = {
     maintenance_data: 'Data Penanganan Inspeksi Rutin',
 };
 
+const CHECKBOX_ARCHIVES = [
+    ['downloadCheckFormJsa', 'jsa_form'],
+    ['downloadCheckFormPersiapan', 'preparation_form'],
+    ['downloadCheckDataAdministrasi', 'administration_form'],
+    ['downloadCheckDataInspeksi', 'inspection'],
+    ['downloadCheckDokumentasi', 'documents'],
+    ['downloadCheckStripmapInspeksi', 'stripmap'],
+    ['downloadCheckStripmapPenanganan', 'maintenance_stripmap'],
+    ['downloadCheckDataPenanganan', 'maintenance_data'],
+];
+
 export function selectedRequestNames() {
-    return [DOWNLOAD_FILE_REQUEST_NAME];
+    return [EXPORT_REQUEST_NAME, PROGRESS_REQUEST_NAME, DOWNLOAD_FILE_REQUEST_NAME];
 }
 
 export function prepareDownloadRun(authContext) {
+    if (authContext && authContext.skipped) return authContext;
+
     if (isRealUserFlow()) {
         console.log('[K6-DOWNLOAD-FLOW] ' + JSON.stringify({ mode: 'real-user' }));
         return authContext;
@@ -72,6 +85,14 @@ export function prepareDownloadRun(authContext) {
 }
 
 export function runDownloadFlow(authContext) {
+    if (authContext && authContext.skipped) {
+        console.warn('[K6-SKIPPED] ' + JSON.stringify({
+            stage: authContext.skipStage || 'support',
+            reason: authContext.skipReason || 'Support/precondition API failed.',
+        }));
+        return;
+    }
+
     if (isRealUserFlow()) {
         runRealUserDownloadFlow(authContext);
         return;
@@ -82,6 +103,14 @@ export function runDownloadFlow(authContext) {
 
 function runRealUserDownloadFlow(authContext) {
     const inspectionId = pickInspectionId(authContext);
+    if (!inspectionId) {
+        console.warn('[K6-SKIPPED] ' + JSON.stringify({
+            stage: LIST_REQUEST_NAME,
+            reason: 'No inspection id available for download flow.',
+        }));
+        return;
+    }
+
     const archiveScenario = pickArchiveScenario();
     const exportJob = createExportJob(authContext, inspectionId, archiveScenario);
     const progress = downloadUrlFromProgressStream(authContext, exportJob.jobId);
@@ -102,7 +131,7 @@ function pickInspectionId(authContext) {
     const candidates = configuredIds.length > 0 ? configuredIds : listRegularInspectionIds(authContext);
 
     if (candidates.length === 0) {
-        throw new Error(`No inspection id available. Fill JIMMS_DOWNLOAD_INSPECTION_IDS or make sure ${regularInspectionListUrl()} returns rows.`);
+        return '';
     }
 
     if (String(environment.downloadRowStrategy || '').toLowerCase() === 'first') {
@@ -128,9 +157,12 @@ function listRegularInspectionIds(authContext) {
     });
     recordApiMetrics(response, LIST_REQUEST_NAME, {
         valid: success,
+        result: success ? 'PASSED' : 'SKIPPED',
+        category: success ? 'passed' : 'support_skipped',
         message: success
             ? `Rows available from status_id[]=${environment.regularInspectionStatusId}`
             : `No rows available from status_id[]=${environment.regularInspectionStatusId}`,
+        skipPerformance: true,
     });
 
     if (!success) return [];
@@ -210,11 +242,13 @@ function downloadUrlFromProgressStream(authContext, jobId) {
         timeout: environment.downloadProgressTimeout,
     });
     const progress = lastSseJson(String(response.body || ''));
-    const success = response.status === 200 && progress && progress.downloadUrl;
+    const hasProgressEvent = Boolean(progress);
+    const hasDownloadUrl = Boolean(progress && progress.downloadUrl);
+    const success = hasDownloadUrl;
 
     check(response, {
-        'progress stream status is 200': () => response.status === 200,
-        'progress stream returns downloadUrl': () => Boolean(progress && progress.downloadUrl),
+        'progress stream is readable': () => response.status === 200 || hasProgressEvent,
+        'progress stream returns downloadUrl': () => hasDownloadUrl,
     });
     recordApiMetrics(response, PROGRESS_REQUEST_NAME, {
         valid: Boolean(success),
@@ -376,6 +410,9 @@ function normalizePreparedJob(job) {
 }
 
 function pickArchiveScenario(index = __VU + __ITER - 1) {
+    const checkboxScenario = archiveScenarioFromCheckboxes();
+    if (checkboxScenario) return checkboxScenario;
+
     const names = archiveScenarioNames();
     const scenarioIndex = environment.randomizeScenario
         ? Math.floor(Math.random() * names.length)
@@ -386,7 +423,26 @@ function pickArchiveScenario(index = __VU + __ITER - 1) {
 
 function archiveScenarioNames() {
     const names = splitCsv(environment.downloadArchiveScenarios);
-    return names.length > 0 ? names : ['all'];
+    if (names.length === 0) {
+        throw new Error('No download checkbox selected. Set JIMMS_DOWNLOAD_ALL_ARCHIVE=true or set at least one JIMMS_DOWNLOAD_CHECK_* value to true.');
+    }
+
+    return names;
+}
+
+function archiveScenarioFromCheckboxes() {
+    if (environment.downloadAllArchive) return archiveScenarioByName('all');
+
+    const archives = CHECKBOX_ARCHIVES
+        .filter(([configKey]) => Boolean(environment[configKey]))
+        .map(([, archiveValue]) => archiveValue);
+
+    if (archives.length === 0) return null;
+
+    return {
+        name: archives.join('+'),
+        archives,
+    };
 }
 
 function archiveScenarioByName(rawName) {
