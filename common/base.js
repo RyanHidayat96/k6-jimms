@@ -34,6 +34,7 @@ export function processData(data, stageList, testingType, scriptPath) {
     const optionFile = `${reportDir}/${scriptName}-optionHtml.json`;
     const reportData = {
         ...data,
+        setup_data: sanitizeSetupData(data.setup_data),
         reportConfig: buildReportConfig(stageList, testingType, scriptPath),
     };
 
@@ -48,6 +49,17 @@ export function processData(data, stageList, testingType, scriptPath) {
         [summaryFile]: JSON.stringify(reportData, null, 2),
         [optionFile]: JSON.stringify(htmlOption, null, 2),
     };
+}
+
+function sanitizeSetupData(value) {
+    if (!value || typeof value !== 'object') return value;
+
+    return JSON.parse(JSON.stringify(value, (key, item) => {
+        if (/token|password|authorization|api[-_]?key|csrf/i.test(String(key || ''))) {
+            return '<hidden in performance report>';
+        }
+        return item;
+    }));
 }
 
 function reportScriptName(scriptPath, testingType) {
@@ -75,6 +87,7 @@ function buildReportConfig(stageList, testingType, scriptPath) {
         apiBaseUrl: environment.apiBaseUrl,
         statusFilter: `status_id[]=${environment.regularInspectionStatusId}`,
         archiveScenarios: environment.downloadArchiveScenarios,
+        downloadFlowMode: environment.downloadFlowMode,
         executor: envValue(`${prefix}_EXECUTOR`) || envValue('JIMMS_EXECUTOR'),
         targetVus: envValue(`${prefix}_TARGET_VUS`) || envValue('JIMMS_TARGET_VUS'),
         vus: envValue(`${prefix}_VUS`) || envValue('JIMMS_VUS'),
@@ -88,8 +101,12 @@ function buildReportConfig(stageList, testingType, scriptPath) {
         thinkTimeSeconds: envValue(`${prefix}_THINK_TIME_SECONDS`) || envValue('JIMMS_THINK_TIME_SECONDS'),
         prepareDownloadBeforeRun: envValue('JIMMS_PREPARE_DOWNLOAD_BEFORE_RUN') || 'true',
         downloadPrepareJobs: environment.downloadPrepareJobs,
+        downloadDirectUrlsConfigured: envValue('JIMMS_DOWNLOAD_DIRECT_URLS') ? 'true' : 'false',
+        downloadJobIdsConfigured: envValue('JIMMS_DOWNLOAD_JOB_IDS') ? 'true' : 'false',
         downloadResponseType: environment.downloadResponseType,
         downloadFileTimeout: environment.downloadFileTimeout,
+        downloadProgressTimeout: environment.downloadProgressTimeout,
+        downloadAllowPollFallback: environment.downloadAllowPollFallback ? 'true' : 'false',
         thresholds: {
             checkRate: envValue(`${thresholdPrefix}_CHECK_RATE`) || envValue('JIMMS_CHECK_RATE'),
             httpErrorRate: envValue(`${thresholdPrefix}_HTTP_ERROR_RATE`) || envValue('JIMMS_HTTP_ERROR_RATE'),

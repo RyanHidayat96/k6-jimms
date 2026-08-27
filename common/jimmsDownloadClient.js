@@ -1,16 +1,11 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
-import { Counter, Rate } from 'k6/metrics';
 import { environment } from '../config/environment.js';
 import { recordApiMetrics } from './errorMetrics.js';
 import { recordRuntimeEvidence, visibleRuntimeValue } from './runtimeEvidence.js';
-import { splitCsv } from './utility.js';
-
-export const exportJobCreated = new Rate('jimms_export_job_created');
-export const exportProgressAvailable = new Rate('jimms_export_progress_available');
-export const exportPayloadArchives = new Counter('jimms_export_payload_archives');
 
 const LIST_REQUEST_NAME = 'GET /v1/regular-inspection filtered-list';
+const EXPORT_REQUEST_NAME = 'POST /v1/regular-inspection/export/{id}';
 const PROGRESS_REQUEST_NAME = 'GET /v1/regular-inspection/export/{jobId}/progress-stream';
 const DOWNLOAD_FILE_REQUEST_NAME = 'GET /v1/regular-inspection/export/{jobId}/download';
 
@@ -54,65 +49,20 @@ export function selectedRequestNames() {
 }
 
 export function prepareDownloadRun(authContext) {
-    const preparedJobsFromRunner = preparedDownloadJobsFromEnv();
-
-    if (preparedJobsFromRunner.length > 0) {
-        console.log('[K6-DOWNLOAD-PREPARED] ' + JSON.stringify({
-            count: preparedJobsFromRunner.length,
-            source: 'runner-env',
-        }));
-
-        return {
-            ...authContext,
-            preparedDownloadJobs: preparedJobsFromRunner,
-        };
+    if (isRealUserFlow()) {
+        console.log('[K6-DOWNLOAD-FLOW] ' + JSON.stringify({ mode: 'real-user' }));
+        return authContext;
     }
 
-    throw new Error('No prepared ZIP download jobs found. Run via npm script so helper/runK6WithEnv.js prepares JIMMS_PREPARED_DOWNLOAD_JOBS_JSON before K6 starts.');
-}
+    const preparedJobs = preparedDownloadJobsFromEnv();
 
-export function prepareDownloadRunInK6(authContext) {
-    const listResponse = listRegularInspections(authContext, { recordMetrics: false });
-    const preparedJobs = [];
-    const prepareJobs = positiveInteger(environment.downloadPrepareJobs, 1);
-
-    for (let index = 0; index < prepareJobs; index += 1) {
-        const inspectionId = pickInspectionId(listResponse, index);
-        const archiveScenario = pickArchiveScenario(index);
-        const exportResponse = exportRegularInspection(authContext, inspectionId, archiveScenario, {
-            recordMetrics: false,
-            logExportMarker: false,
-        });
-        const exportBody = responseJson(exportResponse);
-        const jobId = exportBody && exportBody.data ? exportBody.data.jobId : '';
-        const filename = exportBody && exportBody.data ? exportBody.data.filename : '';
-        const progress = waitForDownloadUrl(authContext, jobId);
-
-        preparedJobs.push({
-            inspectionId: String(inspectionId),
-            archiveScenario: archiveScenario.name,
-            archiveLabels: archiveScenario.archives.map((value) => ARCHIVE_LABELS[value] || value),
-            archiveValues: archiveScenario.archives,
-            jobId,
-            filename,
-            downloadUrl: absoluteApiUrl(progress.downloadUrl),
-            progressStatus: progress.status,
-            progressPercentage: progress.percentage,
-            archiveName: progress.archiveName,
-            expiredAt: progress.expiredAt,
-        });
+    if (preparedJobs.length === 0) {
+        throw new Error('No prepared ZIP download jobs found. Fill JIMMS_DOWNLOAD_DIRECT_URLS/JIMMS_DOWNLOAD_JOB_IDS, or set JIMMS_DOWNLOAD_FLOW_MODE=real-user.');
     }
 
     console.log('[K6-DOWNLOAD-PREPARED] ' + JSON.stringify({
         count: preparedJobs.length,
-        strategy: prepareJobs === 1 ? 'all VUs use the same prepared ZIP URL' : 'VUs rotate prepared ZIP URLs',
-        jobs: preparedJobs.map((job) => ({
-            inspectionId: job.inspectionId,
-            archiveScenario: job.archiveScenario,
-            jobId: job.jobId,
-            filename: job.filename,
-            downloadUrl: job.downloadUrl,
-        })),
+        source: preparedJobs[0].source || 'runner-env',
     }));
 
     return {
@@ -122,13 +72,48 @@ export function prepareDownloadRunInK6(authContext) {
 }
 
 export function runDownloadFlow(authContext) {
-    const preparedJob = pickPreparedDownloadJob(authContext);
-    downloadPreparedZip(authContext, preparedJob);
+    if (isRealUserFlow()) {
+        runRealUserDownloadFlow(authContext);
+        return;
+    }
+
+    downloadZipWithRetry(authContext, pickPreparedDownloadJob(authContext));
 }
 
-export function listRegularInspections(authContext, options = {}) {
-    const url = regularInspectionListUrl();
-    const response = http.get(url, {
+function runRealUserDownloadFlow(authContext) {
+    const inspectionId = pickInspectionId(authContext);
+    const archiveScenario = pickArchiveScenario();
+    const exportJob = createExportJob(authContext, inspectionId, archiveScenario);
+    const progress = downloadUrlFromProgressStream(authContext, exportJob.jobId);
+    const downloadUrl = progress.downloadUrl || `${environment.apiBaseUrl}/v1/regular-inspection/export/${encodeURIComponent(exportJob.jobId)}/download`;
+
+    downloadZipWithRetry(authContext, {
+        inspectionId: String(inspectionId),
+        archiveScenario: archiveScenario.name,
+        jobId: exportJob.jobId,
+        filename: exportJob.filename,
+        downloadUrl,
+        source: progress.downloadUrl ? 'real-user-progress-stream' : 'real-user-download-poll',
+    });
+}
+
+function pickInspectionId(authContext) {
+    const configuredIds = splitCsv(environment.downloadInspectionIds);
+    const candidates = configuredIds.length > 0 ? configuredIds : listRegularInspectionIds(authContext);
+
+    if (candidates.length === 0) {
+        throw new Error(`No inspection id available. Fill JIMMS_DOWNLOAD_INSPECTION_IDS or make sure ${regularInspectionListUrl()} returns rows.`);
+    }
+
+    if (String(environment.downloadRowStrategy || '').toLowerCase() === 'first') {
+        return candidates[0];
+    }
+
+    return candidates[(__VU + __ITER - 1) % candidates.length];
+}
+
+function listRegularInspectionIds(authContext) {
+    const response = http.get(regularInspectionListUrl(), {
         headers: apiHeaders(authContext),
         tags: { request: LIST_REQUEST_NAME },
         timeout: '60s',
@@ -139,39 +124,33 @@ export function listRegularInspections(authContext, options = {}) {
 
     check(response, {
         'regular inspection filtered list status is 200': () => response.status === 200,
-        'regular inspection filtered list success true': () => Boolean(body && body.success === true),
         'regular inspection filtered list has rows': () => rows.length > 0,
     });
+    recordApiMetrics(response, LIST_REQUEST_NAME, {
+        valid: success,
+        message: success
+            ? `Rows available from status_id[]=${environment.regularInspectionStatusId}`
+            : `No rows available from status_id[]=${environment.regularInspectionStatusId}`,
+    });
 
-    if (options.recordMetrics !== false) {
-        recordApiMetrics(response, LIST_REQUEST_NAME, {
-            valid: success,
-            message: success
-                ? `Rows available from status_id[]=${environment.regularInspectionStatusId}`
-                : `No rows available from status_id[]=${environment.regularInspectionStatusId}`,
-        });
-        recordRuntimeEvidence(LIST_REQUEST_NAME, {
-            endpointId: 'JIMMS_REGULAR_INSPECTION_LIST',
-            steps: [
-                'Login NextAuth via /api/auth/csrf, /api/auth/callback/credentials, lalu /api/auth/session.',
-                `GET ${listPathWithQuery()} memakai Authorization Bearer dan x-api-key.`,
-            ],
-            sources: [
-                `status_id[]=${visibleRuntimeValue(environment.regularInspectionStatusId)} dari inspeksi UI status Verifikasi Tindak Lanjut - ME.`,
-                `inspectionId kandidat dari response list: ${visibleRuntimeValue(rows.map((row) => row.id).filter(Boolean).join(', '))}.`,
-            ],
-        });
-    }
+    if (!success) return [];
 
-    return response;
+    recordRuntimeEvidence(LIST_REQUEST_NAME, {
+        endpointId: 'JIMMS_REGULAR_INSPECTION_LIST',
+        steps: [
+            `GET ${listPathWithQuery()} untuk mengambil row Perkerasan Rutin status Verifikasi Tindak Lanjut - ME.`,
+        ],
+        sources: [
+            `inspectionId kandidat=${visibleRuntimeValue(rows.map((row) => row.id).filter(Boolean).join(', '))}.`,
+        ],
+    });
+
+    return rows.map((row) => row && row.id).filter(Boolean);
 }
 
-export function exportRegularInspection(authContext, inspectionId, archiveScenario, options = {}) {
-    if (!inspectionId) {
-        throw new Error('No regular inspection id available for download export.');
-    }
+function createExportJob(authContext, inspectionId, archiveScenario) {
+    if (!inspectionId) throw new Error('No regular inspection id available for download export.');
 
-    const requestName = exportRequestName(archiveScenario.name);
     const multipart = buildMultipartArchiveBody(archiveScenario.archives);
     const response = http.post(
         `${environment.apiBaseUrl}/v1/regular-inspection/export/${inspectionId}`,
@@ -181,79 +160,133 @@ export function exportRegularInspection(authContext, inspectionId, archiveScenar
                 ...apiHeaders(authContext),
                 'Content-Type': `multipart/form-data; boundary=${multipart.boundary}`,
             },
-            tags: { request: requestName, archive_scenario: archiveScenario.name },
+            tags: { request: EXPORT_REQUEST_NAME, archive_scenario: archiveScenario.name },
             timeout: environment.exportTimeout,
         },
     );
     const body = responseJson(response);
+    const jobId = body && body.data ? body.data.jobId : '';
+    const filename = body && body.data ? body.data.filename : '';
     const success = response.status === 200
         && body
         && body.success === true
-        && body.data
-        && body.data.jobId
-        && String(body.data.filename || '').toLowerCase().endsWith('.zip');
+        && jobId
+        && String(filename || '').toLowerCase().endsWith('.zip');
 
     check(response, {
-        [`export ${archiveScenario.name} status is 200`]: () => response.status === 200,
-        [`export ${archiveScenario.name} success true`]: () => Boolean(body && body.success === true),
-        [`export ${archiveScenario.name} jobId exists`]: () => Boolean(body && body.data && body.data.jobId),
-        [`export ${archiveScenario.name} filename zip exists`]: () => Boolean(body && body.data && String(body.data.filename || '').toLowerCase().endsWith('.zip')),
+        'export job queued status is 200': () => response.status === 200,
+        'export job queued success true': () => Boolean(body && body.success === true),
+        'export job id exists': () => Boolean(jobId),
+        'export filename zip exists': () => String(filename || '').toLowerCase().endsWith('.zip'),
+    });
+    recordApiMetrics(response, EXPORT_REQUEST_NAME, {
+        valid: Boolean(success),
+        message: success ? 'Export job queued successfully' : 'Export job queue failed',
+    });
+    recordRuntimeEvidence(EXPORT_REQUEST_NAME, {
+        endpointId: 'JIMMS_REGULAR_INSPECTION_EXPORT',
+        steps: [
+            `POST /v1/regular-inspection/export/${visibleRuntimeValue(inspectionId)} dengan multipart archive[].`,
+        ],
+        sources: [
+            `archive[]=${archiveScenario.archives.map((value) => visibleRuntimeValue(value)).join(', ')}.`,
+            `jobId=${visibleRuntimeValue(jobId)}.`,
+        ],
     });
 
-    exportPayloadArchives.add(archiveScenario.archives.length, { archive_scenario: archiveScenario.name });
-    exportJobCreated.add(Boolean(success), { archive_scenario: archiveScenario.name });
+    if (!success) {
+        throw new Error(`Export job queue failed. status=${response.status}, body=${sampleBody(response)}`);
+    }
 
-    if (options.recordMetrics !== false) {
-        recordApiMetrics(response, requestName, {
-            valid: Boolean(success),
-            message: success ? 'Export process queued successfully' : `Export did not return successful job for scenario ${archiveScenario.name}`,
-        });
-        recordRuntimeEvidence(requestName, {
-            endpointId: 'JIMMS_REGULAR_INSPECTION_EXPORT',
+    return { jobId: String(jobId), filename: String(filename || '') };
+}
+
+function downloadUrlFromProgressStream(authContext, jobId) {
+    if (!jobId) return {};
+
+    const response = http.get(`${environment.apiBaseUrl}/v1/regular-inspection/export/${encodeURIComponent(jobId)}/progress-stream`, {
+        headers: apiHeaders(authContext, 'text/event-stream'),
+        tags: { request: PROGRESS_REQUEST_NAME },
+        timeout: environment.downloadProgressTimeout,
+    });
+    const progress = lastSseJson(String(response.body || ''));
+    const success = response.status === 200 && progress && progress.downloadUrl;
+
+    check(response, {
+        'progress stream status is 200': () => response.status === 200,
+        'progress stream returns downloadUrl': () => Boolean(progress && progress.downloadUrl),
+    });
+    recordApiMetrics(response, PROGRESS_REQUEST_NAME, {
+        valid: Boolean(success),
+        message: success
+            ? 'Download URL ready from progress-stream'
+            : `Progress stream did not return downloadUrl. status=${progress && progress.status ? progress.status : 'N/A'}`,
+    });
+
+    if (success) {
+        recordRuntimeEvidence(PROGRESS_REQUEST_NAME, {
+            endpointId: 'JIMMS_EXPORT_PROGRESS_STREAM',
             steps: [
-                `GET ${listPathWithQuery()} untuk memilih inspectionId.`,
-                `POST /v1/regular-inspection/export/${visibleRuntimeValue(inspectionId)} dengan multipart archive[].`,
+                'UI menunggu job queued lewat progress-stream sampai downloadUrl tersedia.',
             ],
             sources: [
-                `inspectionId=${visibleRuntimeValue(inspectionId)} dari row hasil filter status_id[]=${environment.regularInspectionStatusId}.`,
-                `archive[]=${archiveScenario.archives.map((value) => visibleRuntimeValue(value)).join(', ')} dari scenario ${archiveScenario.name}.`,
-                `jobId response=${visibleRuntimeValue(body && body.data ? body.data.jobId : '')}.`,
+                `jobId=${visibleRuntimeValue(jobId)}.`,
+                `status=${visibleRuntimeValue(progress.status)}.`,
+                `percentage=${visibleRuntimeValue(progress.percentage)}.`,
             ],
         });
+
+        return {
+            downloadUrl: absoluteApiUrl(progress.downloadUrl),
+            status: progress.status,
+            percentage: progress.percentage,
+        };
     }
 
-    if (options.logExportMarker !== false) {
-        console.log(JSON.stringify({
-            marker: 'JIMMS_EXPORT',
-            inspectionId: String(inspectionId),
-            archiveScenario: archiveScenario.name,
-            archiveLabels: archiveScenario.archives.map((value) => ARCHIVE_LABELS[value] || value),
-            archiveValues: archiveScenario.archives,
-            status: response.status,
-            jobId: body && body.data ? body.data.jobId : '',
-            filename: body && body.data ? body.data.filename : '',
-        }));
+    if (!environment.downloadAllowPollFallback) {
+        throw new Error(`Progress stream did not return downloadUrl. http=${response.status}, status=${progress && progress.status ? progress.status : 'N/A'}, percentage=${progress && progress.percentage !== undefined ? progress.percentage : 'N/A'}`);
     }
 
+    return {};
+}
+
+function downloadZipWithRetry(authContext, preparedJob) {
+    if (!preparedJob || !preparedJob.downloadUrl) {
+        throw new Error('No prepared ZIP download URL available.');
+    }
+
+    const attempts = positiveInteger(environment.downloadFilePollAttempts, 1);
+    const intervalSeconds = positiveNumber(environment.downloadFilePollIntervalSeconds, 2);
+    let response = null;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        response = http.get(preparedJob.downloadUrl, {
+            headers: apiHeaders(authContext, 'application/zip, application/octet-stream, */*'),
+            tags: { request: DOWNLOAD_FILE_REQUEST_NAME },
+            timeout: environment.downloadFileTimeout,
+            responseType: environment.downloadResponseType,
+        });
+
+        if (isZipDownloadResponse(response)) {
+            validateZipDownload(response, preparedJob, attempt);
+            return response;
+        }
+
+        if (attempt < attempts) sleep(intervalSeconds);
+    }
+
+    validateZipDownload(response, preparedJob, attempts);
     return response;
 }
 
-export function downloadPreparedZip(authContext, preparedJob) {
-    if (!preparedJob || !preparedJob.downloadUrl) {
-        throw new Error('No prepared ZIP download URL available. Setup did not prepare download job.');
-    }
-
-    const response = http.get(preparedJob.downloadUrl, {
-        headers: apiHeaders(authContext, 'application/zip, application/octet-stream, */*'),
-        tags: { request: DOWNLOAD_FILE_REQUEST_NAME },
-        timeout: environment.downloadFileTimeout,
-        responseType: environment.downloadResponseType,
-    });
+function validateZipDownload(response, preparedJob, attempt) {
     const success = isZipDownloadResponse(response);
 
     check(response, {
         'zip download status is 200': () => response.status === 200,
         'zip download returns file headers': () => isZipDownloadResponse(response),
+        'zip download body downloaded': () => environment.downloadResponseType !== 'binary' || responseBodyLength(response.body) > 0,
+        'zip download body starts with PK': () => environment.downloadResponseType !== 'binary' || bodyStartsWithZipMagic(response.body),
     });
     recordApiMetrics(response, DOWNLOAD_FILE_REQUEST_NAME, {
         valid: success,
@@ -262,109 +295,18 @@ export function downloadPreparedZip(authContext, preparedJob) {
     recordRuntimeEvidence(DOWNLOAD_FILE_REQUEST_NAME, {
         endpointId: 'JIMMS_EXPORT_DOWNLOAD_FILE',
         steps: [
-            'Setup login dan membuat export job agar downloadUrl siap sebelum load dimulai.',
-            'Default function hanya hit GET download ZIP.',
+            'VU membuat export job queued.',
+            'VU menunggu ZIP siap.',
+            'VU hit GET download ZIP dan validasi body file.',
         ],
         sources: [
-            `jobId=${visibleRuntimeValue(preparedJob.jobId)} dari setup export.`,
-            `downloadUrl=${visibleRuntimeValue(preparedJob.downloadUrl)} dari progress-stream.`,
+            `source=${visibleRuntimeValue(preparedJob.source || 'runner-env')}.`,
+            `jobId=${visibleRuntimeValue(preparedJob.jobId)}.`,
+            `downloadUrl=${visibleRuntimeValue(preparedJob.downloadUrl)}.`,
+            `attempt=${visibleRuntimeValue(attempt)}.`,
             `responseType=${visibleRuntimeValue(environment.downloadResponseType)}.`,
         ],
     });
-
-    return response;
-}
-
-export function pollProgressStream(authContext, jobId) {
-    const response = http.get(`${environment.apiBaseUrl}/v1/regular-inspection/export/${jobId}/progress-stream`, {
-        headers: {
-            ...apiHeaders(authContext),
-            Accept: 'text/event-stream',
-        },
-        tags: { request: PROGRESS_REQUEST_NAME },
-        timeout: environment.progressTimeout,
-    });
-    const success = response.status === 200;
-
-    check(response, {
-        'export progress stream status is 200': () => success,
-    });
-
-    exportProgressAvailable.add(success);
-    recordApiMetrics(response, PROGRESS_REQUEST_NAME, {
-        valid: success,
-        message: success ? 'Progress stream available' : 'Progress stream unavailable',
-    });
-    recordRuntimeEvidence(PROGRESS_REQUEST_NAME, {
-        endpointId: 'JIMMS_EXPORT_PROGRESS_STREAM',
-        steps: [
-            'POST export membuat jobId.',
-            'GET progress-stream memakai Accept: text/event-stream.',
-        ],
-        sources: [
-            `jobId=${visibleRuntimeValue(jobId)} dari response export.`,
-            'Default JIMMS_EXPORT_POLL_PROGRESS=false karena SSE long-lived.',
-        ],
-    });
-}
-
-export function waitForDownloadUrl(authContext, jobId) {
-    if (!jobId) {
-        throw new Error('Cannot wait for download URL: jobId is empty.');
-    }
-
-    const attempts = positiveInteger(environment.downloadFilePollAttempts, 3);
-    const intervalSeconds = positiveNumber(environment.downloadFilePollIntervalSeconds, 2);
-    const downloadUrl = `${environment.apiBaseUrl}/v1/regular-inspection/export/${jobId}/download`;
-    let lastStatus = 0;
-    let lastContentType = '';
-    let lastBody = '';
-
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
-        const response = http.get(downloadUrl, {
-            headers: apiHeaders(authContext, 'application/zip, application/octet-stream, */*'),
-            tags: { request: DOWNLOAD_FILE_REQUEST_NAME, purpose: 'setup-readiness-probe' },
-            timeout: environment.downloadFileTimeout,
-            responseType: 'none',
-        });
-        lastStatus = response.status;
-        lastContentType = headerValue(response, 'Content-Type');
-        lastBody = String(response.body || '').slice(0, 300);
-
-        if (isZipDownloadResponse(response)) {
-            return {
-                downloadUrl,
-                status: 'READY',
-                percentage: 100,
-                archiveName: '',
-                expiredAt: '',
-            };
-        }
-
-        if (attempt < attempts) {
-            sleep(intervalSeconds);
-        }
-    }
-
-    throw new Error(`Download URL not ready for jobId=${jobId}. Last status=${lastStatus}, content-type=${lastContentType || '-'}, body=${lastBody || '-'}`);
-}
-
-export function regularInspectionListUrl() {
-    const params = [];
-
-    addParam(params, 'status_id[]', environment.regularInspectionStatusId);
-    addParam(params, 'page', environment.listPage);
-    addParam(params, 'per_page', environment.listPerPage);
-
-    const query = params.join('&');
-    const extraQuery = String(environment.extraListQuery || '').replace(/^\?+|^&+/g, '');
-    const mergedQuery = [query, extraQuery].filter(Boolean).join('&');
-
-    return `${environment.apiBaseUrl}/v1/regular-inspection${mergedQuery ? `?${mergedQuery}` : ''}`;
-}
-
-function listPathWithQuery() {
-    return regularInspectionListUrl().replace(environment.apiBaseUrl, '');
 }
 
 function apiHeaders(authContext, accept = 'application/json, text/plain, */*') {
@@ -375,27 +317,62 @@ function apiHeaders(authContext, accept = 'application/json, text/plain, */*') {
     };
 }
 
-function addParam(params, name, value) {
-    if (value === undefined || value === null || value === '') return;
-    params.push(`${encodeURIComponent(name)}=${encodeURIComponent(value)}`);
+function pickPreparedDownloadJob(authContext) {
+    const jobs = authContext && Array.isArray(authContext.preparedDownloadJobs)
+        ? authContext.preparedDownloadJobs
+        : [];
+
+    if (jobs.length === 0) {
+        throw new Error('No prepared ZIP download jobs available from setup.');
+    }
+
+    return jobs[(__VU + __ITER - 1) % jobs.length];
 }
 
-function pickInspectionId(listResponse, index = __VU + __ITER - 1) {
-    const body = responseJson(listResponse);
-    const rows = rowsFromBody(body);
-    const idsFromList = rows.map((row) => row && row.id).filter(Boolean);
-    const configuredIds = splitCsv(environment.downloadInspectionIds);
-    const candidates = idsFromList.length > 0 ? idsFromList : configuredIds;
+function preparedDownloadJobsFromEnv() {
+    const raw = __ENV.JIMMS_PREPARED_DOWNLOAD_JOBS_JSON || '';
+    if (!raw) return directDownloadJobsFromEnv();
 
-    if (candidates.length === 0) {
-        throw new Error(`No inspection rows found from ${regularInspectionListUrl()} and JIMMS_DOWNLOAD_INSPECTION_IDS is empty.`);
+    try {
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed
+            .filter((job) => job && job.downloadUrl)
+            .map(normalizePreparedJob);
+    } catch (error) {
+        throw new Error(`Invalid JIMMS_PREPARED_DOWNLOAD_JOBS_JSON: ${error.message}`);
     }
+}
 
-    if (String(environment.downloadRowStrategy || '').toLowerCase() === 'first') {
-        return candidates[0];
-    }
+function directDownloadJobsFromEnv() {
+    const urls = splitCsv(environment.downloadDirectUrls).map((downloadUrl, index) => normalizePreparedJob({
+        downloadUrl: absoluteApiUrl(downloadUrl),
+        jobId: jobIdFromDownloadUrl(downloadUrl),
+        archiveScenario: 'direct-url',
+        source: 'JIMMS_DOWNLOAD_DIRECT_URLS',
+        index: index + 1,
+    }));
+    const jobIds = splitCsv(environment.downloadJobIds).map((jobId, index) => normalizePreparedJob({
+        downloadUrl: `${environment.apiBaseUrl}/v1/regular-inspection/export/${encodeURIComponent(jobId)}/download`,
+        jobId,
+        archiveScenario: 'direct-job-id',
+        source: 'JIMMS_DOWNLOAD_JOB_IDS',
+        index: index + 1,
+    }));
 
-    return candidates[index % candidates.length];
+    return urls.concat(jobIds);
+}
+
+function normalizePreparedJob(job) {
+    return {
+        inspectionId: String(job.inspectionId || ''),
+        archiveScenario: String(job.archiveScenario || ''),
+        jobId: String(job.jobId || ''),
+        filename: String(job.filename || ''),
+        downloadUrl: absoluteApiUrl(job.downloadUrl || ''),
+        source: String(job.source || 'runner-env'),
+        index: Number(job.index || 0),
+    };
 }
 
 function pickArchiveScenario(index = __VU + __ITER - 1) {
@@ -426,17 +403,11 @@ function archiveScenarioByName(rawName) {
         return { name, archives: customArchives };
     }
 
-    throw new Error(`Unknown JIMMS_DOWNLOAD_ARCHIVE_SCENARIOS value "${rawName}". Use one of: ${Object.keys(ARCHIVE_SETS).join(', ')}, or custom archive values joined by +.`);
-}
-
-function exportRequestName(scenarioName) {
-    return `POST /v1/regular-inspection/export/{id} ${scenarioName}`;
+    throw new Error(`Unknown JIMMS_DOWNLOAD_ARCHIVE_SCENARIOS value "${rawName}".`);
 }
 
 function buildMultipartArchiveBody(archives) {
-    const vu = typeof __VU === 'undefined' ? 'setup' : __VU;
-    const iteration = typeof __ITER === 'undefined' ? 'setup' : __ITER;
-    const boundary = `----k6JimmsDownload${vu}${iteration}${Date.now()}`;
+    const boundary = `----k6JimmsDownload${__VU}${__ITER}${Date.now()}`;
     const body = archives.map((archiveValue) => [
         `--${boundary}`,
         'Content-Disposition: form-data; name="archive[]"',
@@ -447,6 +418,33 @@ function buildMultipartArchiveBody(archives) {
     return { boundary, body };
 }
 
+function regularInspectionListUrl() {
+    const params = [];
+    addParam(params, 'status_id[]', environment.regularInspectionStatusId);
+    addParam(params, 'page', environment.listPage);
+    addParam(params, 'per_page', environment.listPerPage);
+
+    const query = params.join('&');
+    const extraQuery = String(environment.extraListQuery || '').replace(/^\?+|^&+/g, '');
+    const mergedQuery = [query, extraQuery].filter(Boolean).join('&');
+
+    return `${environment.apiBaseUrl}/v1/regular-inspection${mergedQuery ? `?${mergedQuery}` : ''}`;
+}
+
+function listPathWithQuery() {
+    return regularInspectionListUrl().replace(environment.apiBaseUrl, '');
+}
+
+function addParam(params, name, value) {
+    if (value === undefined || value === null || value === '') return;
+    params.push(`${encodeURIComponent(name)}=${encodeURIComponent(value)}`);
+}
+
+function rowsFromBody(body) {
+    if (!body || !body.data || !Array.isArray(body.data.data)) return [];
+    return body.data.data;
+}
+
 function responseJson(response) {
     try {
         return response.json();
@@ -455,60 +453,8 @@ function responseJson(response) {
     }
 }
 
-function rowsFromBody(body) {
-    if (!body || !body.data || !Array.isArray(body.data.data)) return [];
-    return body.data.data;
-}
-
-function pickPreparedDownloadJob(authContext) {
-    const jobs = authContext && Array.isArray(authContext.preparedDownloadJobs)
-        ? authContext.preparedDownloadJobs
-        : [];
-
-    if (jobs.length === 0) {
-        throw new Error('No prepared ZIP download jobs available from setup.');
-    }
-
-    return jobs[(__VU + __ITER - 1) % jobs.length];
-}
-
-function preparedDownloadJobsFromEnv() {
-    const raw = __ENV.JIMMS_PREPARED_DOWNLOAD_JOBS_JSON || '';
-    if (!raw) return [];
-
-    try {
-        const parsed = JSON.parse(raw);
-        if (!Array.isArray(parsed)) return [];
-        return parsed
-            .filter((job) => job && job.downloadUrl)
-            .map((job) => ({
-                inspectionId: String(job.inspectionId || ''),
-                archiveScenario: String(job.archiveScenario || ''),
-                jobId: String(job.jobId || ''),
-                filename: String(job.filename || ''),
-                downloadUrl: String(job.downloadUrl || ''),
-            }));
-    } catch (error) {
-        throw new Error(`Invalid JIMMS_PREPARED_DOWNLOAD_JOBS_JSON: ${error.message}`);
-    }
-}
-
-function isZipDownloadResponse(response) {
-    const contentType = headerValue(response, 'Content-Type').toLowerCase();
-    const contentDisposition = headerValue(response, 'Content-Disposition').toLowerCase();
-    const contentLength = Number(headerValue(response, 'Content-Length') || 0);
-    const zipHeaders = contentType.includes('zip')
-        || contentType.includes('octet-stream')
-        || contentDisposition.includes('.zip')
-        || contentDisposition.includes('attachment');
-
-    return response.status === 200 && zipHeaders && contentLength >= 0;
-}
-
-function headerValue(response, name) {
-    const headers = response && response.headers ? response.headers : {};
-    const match = Object.keys(headers).find((key) => key.toLowerCase() === String(name).toLowerCase());
-    return match ? String(headers[match] || '') : '';
+function sampleBody(response) {
+    return String(response && response.body ? response.body : '').slice(0, 300);
 }
 
 function lastSseJson(text) {
@@ -518,22 +464,66 @@ function lastSseJson(text) {
         .filter((line) => line.startsWith('data:'))
         .map((line) => line.slice(5).trim())
         .filter(Boolean)
-        .map((line) => {
-            try {
-                return JSON.parse(line);
-            } catch (error) {
-                return null;
-            }
-        })
+        .map(parseJson)
         .filter(Boolean);
 
     return events.length > 0 ? events[events.length - 1] : null;
+}
+
+function parseJson(text) {
+    try {
+        return JSON.parse(text);
+    } catch (error) {
+        return null;
+    }
+}
+
+function isZipDownloadResponse(response) {
+    const contentType = headerValue(response, 'Content-Type').toLowerCase();
+    const contentDisposition = headerValue(response, 'Content-Disposition').toLowerCase();
+    const zipHeaders = contentType.includes('zip')
+        || contentType.includes('octet-stream')
+        || contentDisposition.includes('.zip')
+        || contentDisposition.includes('attachment');
+
+    return response && response.status === 200 && zipHeaders;
+}
+
+function headerValue(response, name) {
+    const headers = response && response.headers ? response.headers : {};
+    const match = Object.keys(headers).find((key) => key.toLowerCase() === String(name).toLowerCase());
+    return match ? String(headers[match] || '') : '';
 }
 
 function absoluteApiUrl(value) {
     const raw = String(value || '');
     if (/^https?:\/\//i.test(raw)) return raw;
     return `${environment.apiBaseUrl}${raw.startsWith('/') ? raw : `/${raw}`}`;
+}
+
+function jobIdFromDownloadUrl(value) {
+    const match = String(value || '').match(/\/export\/([^/]+)\/download(?:[?#].*)?$/i);
+    return match ? decodeURIComponent(match[1]) : '';
+}
+
+function responseBodyLength(body) {
+    if (!body) return 0;
+    if (typeof body.byteLength === 'number') return body.byteLength;
+    return String(body).length;
+}
+
+function bodyStartsWithZipMagic(body) {
+    if (!body) return false;
+    if (typeof ArrayBuffer !== 'undefined' && body instanceof ArrayBuffer) {
+        const bytes = new Uint8Array(body);
+        return bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b;
+    }
+
+    return String(body).slice(0, 2) === 'PK';
+}
+
+function isRealUserFlow() {
+    return String(environment.downloadFlowMode || '').toLowerCase() === 'real-user';
 }
 
 function positiveInteger(value, fallback) {
@@ -544,4 +534,8 @@ function positiveInteger(value, fallback) {
 function positiveNumber(value, fallback) {
     const parsed = Number(value);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function splitCsv(value) {
+    return String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
 }

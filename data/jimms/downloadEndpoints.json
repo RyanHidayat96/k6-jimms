@@ -69,7 +69,7 @@
     "method": "POST",
     "path": "/v1/regular-inspection/export/{inspectionId}",
     "category": "main",
-    "dataStrategy": "inspectionId diambil dari row hasil filter status_id[]=27 atau JIMMS_DOWNLOAD_INSPECTION_IDS.",
+    "dataStrategy": "Real-user flow: tiap iteration membuat export job queued dari row status_id[]=27 atau JIMMS_DOWNLOAD_INSPECTION_IDS.",
     "requestTemplate": {
       "multipart_form_data": [
         "archive[]=jsa_form",
@@ -94,8 +94,8 @@
     "name": "GET /v1/regular-inspection/export/{jobId}/progress-stream",
     "method": "GET",
     "path": "/v1/regular-inspection/export/{jobId}/progress-stream",
-    "category": "optional",
-    "dataStrategy": "Dipakai runner sebelum K6 dimulai untuk mengambil downloadUrl ZIP dari jobId export.",
+    "category": "support",
+    "dataStrategy": "Real-user flow: dipakai setelah POST export untuk menunggu job queued sampai downloadUrl ZIP tersedia. Jika belum ada, fallback polling GET download.",
     "requestTemplate": {},
     "headers": {
       "Authorization": "Bearer <accessToken>",
@@ -109,7 +109,7 @@
     "method": "GET",
     "path": "/v1/regular-inspection/export/{jobId}/download",
     "category": "main",
-    "dataStrategy": "Target performance utama. jobId/downloadUrl disiapkan runner, lalu VU hit endpoint ZIP langsung.",
+    "dataStrategy": "Target performance utama. Real-user flow: VU hit endpoint ZIP setelah export job queued siap. Download-only flow: VU pakai direct/prepared URL.",
     "requestTemplate": {},
     "headers": {
       "Authorization": "Bearer <accessToken>",

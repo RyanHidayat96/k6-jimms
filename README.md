@@ -106,7 +106,7 @@ Response sukses:
 }
 ```
 
-UI lalu membuka progress stream:
+UI biasanya lalu membuka progress stream untuk menunggu ZIP selesai dibuat:
 
 ```http
 GET /v1/regular-inspection/export/{jobId}/progress-stream
@@ -119,7 +119,7 @@ Saat selesai, stream mengembalikan `downloadUrl`:
 GET /v1/regular-inspection/export/{jobId}/download
 ```
 
-Pada script ini, runner Node menyiapkan `jobId` dan `downloadUrl` sebelum K6 dimulai. K6 lalu hanya mengukur request file ZIP.
+Default script memakai `JIMMS_DOWNLOAD_FLOW_MODE=real-user`: tiap iteration membuat export job queued, menunggu ZIP siap, lalu hit endpoint download dan validasi body ZIP.
 
 ### Target Performance
 
@@ -131,19 +131,20 @@ Authorization: Bearer <accessToken>
 x-api-key: <JIMMS_API_KEY>
 ```
 
-Default `JIMMS_DOWNLOAD_RESPONSE_TYPE=none`, jadi body ZIP tidak disimpan ke memory, tetapi request tetap mengunduh file dan metrik `duration`/`data_received` tetap tercatat.
+Default `JIMMS_DOWNLOAD_RESPONSE_TYPE=binary`, jadi body ZIP benar-benar dibaca oleh K6 dan dicek sebagai file ZIP. File tidak disimpan ke folder report; report berisi bukti sukses/gagal dari checks dan metric `data_received`.
 
 Jumlah job ZIP yang disiapkan:
 
 ```env
+JIMMS_DOWNLOAD_FLOW_MODE=real-user
+JIMMS_DOWNLOAD_DIRECT_URLS=
+JIMMS_DOWNLOAD_JOB_IDS=
 JIMMS_DOWNLOAD_PREPARE_JOBS=1
-JIMMS_PREPARE_DOWNLOAD_BEFORE_RUN=true
+JIMMS_PREPARE_DOWNLOAD_BEFORE_RUN=false
 JIMMS_SETUP_TIMEOUT=5m
 ```
 
-`1` berarti semua VU download ZIP yang sama. Isi lebih besar jika ingin VU rotate beberapa `downloadUrl`.
-
-File JSON lama di `test-results/reports/k6/download-results` adalah manifest export job dari mode lama. Mode aktif sekarang tidak memerlukannya.
+`real-user` mengikuti UI: `POST export` -> job queued -> tunggu `progress-stream` -> `GET download`. Jika `progress-stream` stuck dan tidak memberi `downloadUrl`, test gagal. `download-only` dipakai jika ingin langsung hit URL download dari `JIMMS_DOWNLOAD_DIRECT_URLS` atau `JIMMS_DOWNLOAD_JOB_IDS`.
 
 ## Command
 
@@ -206,14 +207,25 @@ npm run load
 
 ## Data Test
 
-Default flow sekarang:
+Default real-user flow:
 
-1. Runner login.
-2. Runner ambil list dengan `status_id[]=27`.
-3. Runner POST export sesuai scenario checkbox.
-4. Runner ambil `downloadUrl` dari `progress-stream`.
-5. K6 `setup()` login dan baca `downloadUrl` yang sudah siap.
-6. VU/iteration hanya hit `GET /v1/regular-inspection/export/{jobId}/download`.
+1. K6 setup login sekali dan ambil token.
+2. Tiap VU/iteration ambil `inspectionId` dari `JIMMS_DOWNLOAD_INSPECTION_IDS` atau list status_id[]=27.
+3. Tiap VU/iteration `POST /v1/regular-inspection/export/{inspectionId}`.
+4. Tiap VU/iteration tunggu job queued lewat `progress-stream`.
+5. Tiap VU/iteration validasi ZIP: status 200, header file, body terunduh, magic bytes `PK`.
+
+Fallback polling `GET /download` hanya aktif jika eksplisit:
+
+```env
+JIMMS_DOWNLOAD_ALLOW_POLL_FALLBACK=true
+```
+
+Mode download-only:
+
+1. Set `JIMMS_DOWNLOAD_FLOW_MODE=download-only`.
+2. Isi `JIMMS_DOWNLOAD_DIRECT_URLS` atau `JIMMS_DOWNLOAD_JOB_IDS`.
+3. VU/iteration hanya hit `GET /v1/regular-inspection/export/{jobId}/download`.
 
 Jika data filter kosong atau ingin pin data tertentu, isi:
 
@@ -266,5 +278,3 @@ Metric utama:
 | `jimms_load_error_rate` | Rate error kapasitas/load seperti timeout, 429, dan 5xx |
 | `jimms_valid_req_duration` | Durasi request valid, dipakai untuk threshold SLA |
 | `data_received` | Byte ZIP yang benar-benar diterima selama test |
-| `jimms_export_job_created` | Export job yang dibuat saat setup |
-| `jimms_export_payload_archives` | Jumlah item `archive[]` yang dikirim saat setup |

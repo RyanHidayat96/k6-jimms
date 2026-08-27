@@ -3,6 +3,14 @@ import { check } from 'k6';
 import { environment } from '../config/environment.js';
 
 export function authenticate() {
+    if (environment.accessToken) {
+        return {
+            accessToken: environment.accessToken,
+            username: environment.username || 'JIMMS_ACCESS_TOKEN',
+            authenticatedAt: new Date().toISOString(),
+        };
+    }
+
     const csrfResponse = http.get(`${environment.feBaseUrl}/api/auth/csrf`, {
         tags: { request: 'GET /api/auth/csrf' },
         timeout: '30s',

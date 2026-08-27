@@ -7,7 +7,7 @@ const env = loadPerformanceEnv(projectRoot);
 const reportDir = path.resolve(projectRoot, env.K6_REPORT_DIR || './test-results/reports/k6');
 const debugDir = path.join(reportDir, 'debug');
 const summaryFiles = fs.existsSync(reportDir)
-    ? fs.readdirSync(reportDir).filter((file) => file.endsWith('-summary.json'))
+    ? fs.readdirSync(reportDir).filter((file) => file.endsWith('-summary.json')).filter(shouldIncludeSummaryFile)
     : [];
 const endpointCatalog = loadEndpointCatalog();
 
@@ -17,7 +17,9 @@ const VALID_REQUEST_DURATION_METRIC = 'jimms_valid_req_duration';
 const DATA_PRECONDITION_COUNT_METRIC = 'jimms_data_precondition_count';
 
 if (summaryFiles.length === 0) {
-    console.error(`No K6 summary files found in ${reportDir}. Run a K6 test first.`);
+    removeStaleOverviewFiles();
+    console.error(`No JIMMS K6 summary files found in ${reportDir}. Run smoke/load until K6 writes *-summary.json.`);
+    latestRunErrors().forEach((item) => console.error(`Latest ${item.scriptName}: ${item.status}${item.error ? ` - ${item.error}` : ''}`));
     process.exit(1);
 }
 
@@ -49,6 +51,35 @@ function loadEndpointCatalog() {
     } catch (error) {
         return [];
     }
+}
+
+function shouldIncludeSummaryFile(file) {
+    if (String(env.K6_INCLUDE_PROBE_REPORTS || '').toLowerCase() === 'true') return true;
+    return !/probe/i.test(file);
+}
+
+function removeStaleOverviewFiles() {
+    ['jimmsDownloadPerformanceOverview.html', 'index.html'].forEach((file) => {
+        const filePath = path.join(reportDir, file);
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    });
+}
+
+function latestRunErrors() {
+    if (!fs.existsSync(debugDir)) return [];
+
+    return fs.readdirSync(debugDir)
+        .filter((file) => file.endsWith('-latest-log.json'))
+        .map((file) => {
+            try {
+                return readJsonFile(path.join(debugDir, file));
+            } catch (error) {
+                return null;
+            }
+        })
+        .filter(Boolean)
+        .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
+        .slice(0, 5);
 }
 
 function readJsonFile(filePath) {
@@ -237,6 +268,7 @@ function runConfigurationForReport(summary, displayName, metrics, thresholds, du
         ['API Base URL', safeConfigValue(config.apiBaseUrl || env.JIMMS_API_BASE_URL || '-')],
         ['Status filter', safeConfigValue(config.statusFilter || `status_id[]=${env.JIMMS_REGULAR_INSPECTION_STATUS_ID || 27}`)],
         ['Archive scenarios', safeConfigValue(config.archiveScenarios || env.JIMMS_DOWNLOAD_ARCHIVE_SCENARIOS || 'all')],
+        ['Download flow mode', safeConfigValue(config.downloadFlowMode || env.JIMMS_DOWNLOAD_FLOW_MODE || 'real-user')],
         ['Executor', safeConfigValue(config.executor)],
         ['Configured VU', safeConfigValue(config.vus || config.targetVus)],
         ['Actual max VU', safeConfigValue(metricNumber(metrics.vus_max, 'max') || metricNumber(metrics.vus_max, 'value'))],
@@ -248,9 +280,13 @@ function runConfigurationForReport(summary, displayName, metrics, thresholds, du
         ['Ramp up / hold / ramp down', `${safeConfigValue(config.rampUp)} / ${safeConfigValue(config.hold)} / ${safeConfigValue(config.rampDown)}`],
         ['Think time', `${safeConfigValue(config.thinkTimeSeconds)} second(s)`],
         ['Prepare download before run', safeConfigValue(config.prepareDownloadBeforeRun || env.JIMMS_PREPARE_DOWNLOAD_BEFORE_RUN || 'true')],
+        ['Direct download URLs configured', safeConfigValue(config.downloadDirectUrlsConfigured || (env.JIMMS_DOWNLOAD_DIRECT_URLS ? 'true' : 'false'))],
+        ['Direct job IDs configured', safeConfigValue(config.downloadJobIdsConfigured || (env.JIMMS_DOWNLOAD_JOB_IDS ? 'true' : 'false'))],
         ['Prepared ZIP jobs', safeConfigValue(config.downloadPrepareJobs || env.JIMMS_DOWNLOAD_PREPARE_JOBS || '1')],
         ['Download response type', safeConfigValue(config.downloadResponseType || env.JIMMS_DOWNLOAD_RESPONSE_TYPE || 'none')],
         ['Download timeout', safeConfigValue(config.downloadFileTimeout || env.JIMMS_DOWNLOAD_FILE_TIMEOUT || '-')],
+        ['Progress timeout', safeConfigValue(config.downloadProgressTimeout || env.JIMMS_DOWNLOAD_PROGRESS_TIMEOUT || '-')],
+        ['Poll fallback allowed', safeConfigValue(config.downloadAllowPollFallback || env.JIMMS_DOWNLOAD_ALLOW_POLL_FALLBACK || 'false')],
         ['Threshold valid response rate', safeConfigValue(thresholdValues.checkRate || thresholdRuleFor(thresholds, VALID_RESPONSE_RATE_METRIC))],
         ['Threshold load/capacity error rate', safeConfigValue(thresholdValues.httpErrorRate || thresholdRuleFor(thresholds, LOAD_ERROR_RATE_METRIC))],
         ['Threshold valid traffic P95 / P99', `${safeConfigValue(thresholdValues.p95Ms ? `${thresholdValues.p95Ms} ms` : thresholdRuleFor(thresholds, VALID_REQUEST_DURATION_METRIC, 'p(95)'))} / ${safeConfigValue(thresholdValues.p99Ms ? `${thresholdValues.p99Ms} ms` : thresholdRuleFor(thresholds, VALID_REQUEST_DURATION_METRIC, 'p(99)'))}`],
@@ -295,15 +331,13 @@ function requestSummaryTable(items, responseSamples = [], runtimeEvidence = []) 
         return `<tr>
 <td><strong>${escapeHtml(item.name)}</strong><div class="small">${escapeHtml(item.method)} ${escapeHtml(item.path)}</div></td>
 <td>${escapeHtml(item.dataStrategy || '-')}</td>
-<td>${detailsBlock('API pendukung', runtimeEvidenceText(evidence, 'steps'))}</td>
-<td>${detailsBlock('Sumber data', runtimeEvidenceText(evidence, 'sources'))}</td>
 <td>${detailsBlock('Headers', item.headers || {})}</td>
 <td>${detailsBlock('Request', item.requestTemplate || {})}</td>
 <td>${responseSamplesBlock(samples, evidence)}</td>
 </tr>`;
     }).join('');
 
-    return `${intro}<table><thead><tr><th>Endpoint</th><th>Strategi Data</th><th>API Sebelum Endpoint Utama</th><th>Data Dari API Sebelumnya</th><th>Header</th><th>Request Template</th><th>Response Sample</th></tr></thead><tbody>${rows}</tbody></table>`;
+    return `${intro}<table><thead><tr><th>Endpoint</th><th>Strategi Data</th><th>Header</th><th>Request Template</th><th>Response Sample</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function errorSummaryTable(errors) {
@@ -671,9 +705,6 @@ function keyMetricsTable(metrics) {
         DATA_PRECONDITION_COUNT_METRIC,
         VALID_REQUEST_DURATION_METRIC,
         'jimms_api_error_count',
-        'jimms_export_job_created',
-        'jimms_export_payload_archives',
-        'jimms_export_progress_available',
         'http_reqs',
         'http_req_failed',
         'http_req_duration',
