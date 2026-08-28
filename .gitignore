@@ -2,3 +2,4 @@
 test-results/
 *.log
 node_modules/
+readme.md
