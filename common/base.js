@@ -87,6 +87,7 @@ function buildReportConfig(stageList, testingType, scriptPath) {
         downloadAllArchive: environment.downloadAllArchive ? 'true' : 'false',
         downloadProgressTimeout: environment.downloadProgressTimeout,
         downloadProgressAttempts: environment.downloadProgressAttempts,
+        saveDownloadedZip: environment.saveDownloadedZip ? 'true' : 'false',
         executor: envValue(`${prefix}_EXECUTOR`) || envValue('JIMMS_EXECUTOR'),
         targetVus: envValue(`${prefix}_TARGET_VUS`) || envValue('JIMMS_TARGET_VUS'),
         vus: envValue(`${prefix}_VUS`) || envValue('JIMMS_VUS'),

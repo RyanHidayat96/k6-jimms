@@ -41,6 +41,7 @@ export const environment = {
     downloadProgressTimeout: __ENV.JIMMS_DOWNLOAD_PROGRESS_TIMEOUT || '80s',
     downloadProgressAttempts: intEnv('JIMMS_DOWNLOAD_PROGRESS_ATTEMPTS', 60),
     downloadResponseType: 'binary',
+    saveDownloadedZip: boolEnv('JIMMS_SAVE_DOWNLOADED_ZIP', false),
     setupTimeout: '5m',
     insecureSkipTLSVerify: false,
     reportDir: __ENV.K6_REPORT_DIR || './test-results/reports/k6',

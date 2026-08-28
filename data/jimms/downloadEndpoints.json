@@ -95,7 +95,7 @@
     "method": "GET",
     "path": "/v1/regular-inspection/export/{jobId}/progress-stream",
     "category": "support",
-    "dataStrategy": "Real-user flow: dipakai setelah POST export untuk menunggu job queued sampai downloadUrl ZIP tersedia. Jika belum ada, fallback polling GET download.",
+    "dataStrategy": "Real-user flow: dipakai setelah POST export untuk menunggu job queued sampai downloadUrl ZIP tersedia.",
     "requestTemplate": {},
     "headers": {
       "Authorization": "Bearer <accessToken>",
@@ -109,7 +109,7 @@
     "method": "GET",
     "path": "/v1/regular-inspection/export/{jobId}/download",
     "category": "main",
-    "dataStrategy": "Target performance utama. Real-user flow: VU hit endpoint ZIP setelah export job queued siap. Download-only flow: VU pakai direct/prepared URL.",
+    "dataStrategy": "Target performance utama. Real-user flow: VU hit endpoint ZIP setelah export job queued siap.",
     "requestTemplate": {},
     "headers": {
       "Authorization": "Bearer <accessToken>",

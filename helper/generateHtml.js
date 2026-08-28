@@ -145,7 +145,7 @@ function renderSinglePageHtml(reports) {
         })
         .sort((left, right) => right.error.count - left.error.count)
         .slice(0, 12)
-        .map((item) => `<tr><td>${escapeHtml(displayReportName(item.reportName))}</td><td>${escapeHtml(item.error.request)}</td><td>${escapeHtml(displayErrorCategory(item.error.category))}</td><td>${escapeHtml(item.error.status)}</td><td>${escapeHtml(item.error.responseCode)}</td><td>${escapeHtml(item.error.message)}</td><td>${formatNumber(item.error.count)}</td></tr>`)
+        .map((item) => `<tr><td>${escapeHtml(displayReportName(item.reportName))}</td><td>${escapeHtml(item.error.request)}</td><td>${escapeHtml(displayErrorCategory(item.error.category))}</td><td>${escapeHtml(item.error.status)}</td><td>${escapeHtml(item.error.responseCode)}</td><td>${escapeHtml(item.error.message)}</td><td>${escapeHtml(errorExplanation(item.error))}</td><td>${formatNumber(item.error.count)}</td></tr>`)
         .join('');
     const detailSections = sortedReports
         .map((report) => renderDetailHtml(report.reportName, report.summary))
@@ -153,8 +153,8 @@ function renderSinglePageHtml(reports) {
 
     return page('K6 Performance Report', 'JIMMS download performance reports', `
 ${section('Ringkasan Report', `<p class="small">Detail request, header, response sample, checks, thresholds, dan metrik lengkap ditampilkan langsung di halaman ini.</p><table><thead><tr><th>Report</th><th>Status</th><th>Iterations</th><th>HTTP Requests</th><th>Valid Response</th><th>Load Error Rate</th><th>Valid P95</th><th>Max</th></tr></thead><tbody>${rows}</tbody></table>`)}
-${section('Failed Check Terbanyak', failedRows ? `<table><thead><tr><th>Report</th><th>Check</th><th>Pass</th><th>Fail</th></tr></thead><tbody>${failedRows}</tbody></table>` : '<p class="small">Tidak ada failed check.</p>')}
-${section('Error Terbanyak', errorRows ? `<table><thead><tr><th>Report</th><th>Endpoint / Request</th><th>Kategori</th><th>HTTP Status</th><th>Response Code</th><th>Pesan Error</th><th>Jumlah</th></tr></thead><tbody>${errorRows}</tbody></table>` : '<p class="small">Tidak ada error HTTP/API yang tercatat.</p>')}
+${section('Failed Check', failedRows ? `<table><thead><tr><th>Report</th><th>Check</th><th>Pass</th><th>Fail</th></tr></thead><tbody>${failedRows}</tbody></table>` : '<p class="small">Tidak ada failed check.</p>')}
+${section('Error', errorRows ? `<p class="small">Ringkasan penyebab error paling sering dari metric dan response sample log.</p><table><thead><tr><th>Report</th><th>Endpoint / Request</th><th>Kategori</th><th>HTTP Status</th><th>Response Code</th><th>Pesan Error</th><th>Penjelasan</th><th>Jumlah</th></tr></thead><tbody>${errorRows}</tbody></table>` : '<p class="small">Tidak ada error HTTP/API yang tercatat.</p>')}
 ${detailSections}
 `);
 }
@@ -167,7 +167,7 @@ function renderDetailHtml(reportName, summary) {
     const durationMs = summary.state && typeof summary.state.testRunDurationMs === 'number'
         ? summary.state.testRunDurationMs
         : undefined;
-    const errors = collectApiErrors(metrics);
+    const errors = collectReportErrors(metrics, reportName);
     const responseSamples = collectApiResponseSamples(reportName);
     const runtimeEvidence = collectRuntimeEvidence(reportName);
     const status = reportStatus(thresholds, checks, metrics);
@@ -270,7 +270,7 @@ function buildReportSummary(reportName, summary) {
         validP95: preferredMetricNumber(metrics, VALID_REQUEST_DURATION_METRIC, '', 'p(95)'),
         max: metricNumber(metrics.http_req_duration, 'max'),
         failedChecks: checks.filter((item) => isMainCheck(item.name) && item.fails > 0).sort((a, b) => b.fails - a.fails),
-        errors: collectApiErrors(metrics),
+        errors: collectReportErrors(metrics, reportName),
     };
 }
 
@@ -286,6 +286,7 @@ function runConfigurationForReport(summary, displayName, metrics, thresholds, du
         ['All archive checkbox', safeConfigValue(config.downloadAllArchive || env.JIMMS_DOWNLOAD_ALL_ARCHIVE || 'true')],
         ['Progress timeout', safeConfigValue(config.downloadProgressTimeout || env.JIMMS_DOWNLOAD_PROGRESS_TIMEOUT || '80s')],
         ['Progress attempts', safeConfigValue(config.downloadProgressAttempts || env.JIMMS_DOWNLOAD_PROGRESS_ATTEMPTS || '60')],
+        ['Save downloaded ZIP', safeConfigValue(config.saveDownloadedZip || env.JIMMS_SAVE_DOWNLOADED_ZIP || 'false')],
         ['Executor', safeConfigValue(config.executor)],
         ['Configured VU', safeConfigValue(config.vus || config.targetVus)],
         ['Actual max VU', safeConfigValue(metricNumber(metrics.vus_max, 'max') || metricNumber(metrics.vus_max, 'value'))],
@@ -355,8 +356,9 @@ function requestSummaryTable(items, responseSamples = [], runtimeEvidence = []) 
 
 function errorSummaryTable(errors) {
     if (!errors || errors.length === 0) return '<p class="small">Tidak ada error HTTP/API yang tercatat pada summary ini.</p>';
-    const rows = errors.map((item) => `<tr><td>${escapeHtml(item.request)}</td><td>${escapeHtml(displayErrorCategory(item.category))}</td><td>${escapeHtml(item.status)}</td><td>${escapeHtml(item.responseCode)}</td><td>${escapeHtml(item.message)}</td><td>${formatNumber(item.count)}</td></tr>`).join('');
-    return `<table><thead><tr><th>Endpoint / Request</th><th>Kategori</th><th>HTTP Status</th><th>Response Code</th><th>Pesan Error</th><th>Jumlah</th></tr></thead><tbody>${rows}</tbody></table>`;
+    const intro = '<p class="small">Error disusun dari metric K6 dan response sample log. Jika response sama, hanya diwakili satu baris dengan jumlah sample serupa.</p>';
+    const rows = errors.map((item) => `<tr><td>${escapeHtml(item.request)}</td><td>${escapeHtml(displayErrorCategory(item.category))}</td><td>${escapeHtml(item.status)}</td><td>${escapeHtml(item.responseCode)}</td><td>${escapeHtml(item.message)}</td><td>${escapeHtml(errorExplanation(item))}</td><td>${formatNumber(item.count)}</td></tr>`).join('');
+    return `${intro}<table><thead><tr><th>Endpoint / Request</th><th>Kategori</th><th>HTTP Status</th><th>Response Code</th><th>Pesan Error</th><th>Penjelasan</th><th>Jumlah</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function endpointDurationsForReport(metrics, thresholds) {
@@ -516,6 +518,32 @@ function runtimeEvidenceText(evidence, key) {
     return evidence && Array.isArray(evidence[key]) && evidence[key].length > 0 ? evidence[key] : ['Belum ada runtime evidence pada log yang dibaca.'];
 }
 
+function collectReportErrors(metrics, reportName) {
+    const sampleErrors = collectResponseSampleErrors(reportName);
+    if (sampleErrors.length > 0) return sampleErrors;
+    return collectApiErrors(metrics);
+}
+
+function collectResponseSampleErrors(reportName) {
+    return groupResponseSamples(collectApiResponseSamples(reportName).filter(isErrorResponseSample))
+        .map((item) => ({
+            request: item.request || 'N/A',
+            category: item.category || 'N/A',
+            status: item.status || 'N/A',
+            responseCode: item.responseCode || 'N/A',
+            message: item.message || 'N/A',
+            count: item.sampleCount || 1,
+        }))
+        .sort((left, right) => right.count - left.count);
+}
+
+function isErrorResponseSample(sample) {
+    const result = String(sample && sample.result ? sample.result : '').toUpperCase();
+    const category = String(sample && sample.category ? sample.category : '').toLowerCase();
+
+    return result !== 'PASSED' && category !== 'passed' && category !== 'support_skipped';
+}
+
 function collectApiErrors(metrics) {
     return Object.entries(metrics || {})
         .filter(([metricName]) => String(metricName).startsWith('jimms_api_error_count{'))
@@ -531,6 +559,45 @@ function collectApiErrors(metrics) {
             };
         })
         .sort((left, right) => right.count - left.count);
+}
+
+function errorExplanation(error) {
+    const request = String(error && error.request ? error.request : '').toLowerCase();
+    const message = String(error && error.message ? error.message : '').toLowerCase();
+    const status = String(error && error.status ? error.status : '').toLowerCase();
+    const responseCode = String(error && error.responseCode ? error.responseCode : '').toLowerCase();
+
+    if (request.includes('progress-stream') && message.includes('downloadurl')) {
+        if (message.includes('waiting')) {
+            return 'Export job masih antre worker. ZIP belum mulai diproses sebelum progress timeout/attempt habis.';
+        }
+        if (message.includes('processing')) {
+            return 'Worker sudah memproses ZIP, tetapi belum selesai sebelum progress timeout/attempt habis.';
+        }
+        return 'Progress-stream selesai tanpa downloadUrl. ZIP belum siap diambil.';
+    }
+
+    if (status === '429' || responseCode === '429' || includesText(message, ['too many request', 'too many requests', 'rate limit'])) {
+        return 'Server membatasi traffic. Jumlah request bersamaan terlalu tinggi untuk limit saat itu.';
+    }
+
+    if (status === '0' || status === 'n/a' || includesText(message, ['timeout', 'timed out', 'request timeout', 'connection reset'])) {
+        return 'Request timeout atau koneksi putus sebelum response valid diterima.';
+    }
+
+    if (/^5\d\d$/.test(status) || includesText(message, ['bad gateway', 'service unavailable', 'gateway timeout', 'internal server error'])) {
+        return 'Server/gateway error saat memproses request.';
+    }
+
+    if (status === '401' || status === '403' || includesText(message, ['unauthorized', 'forbidden', 'authorization', 'x-api-key'])) {
+        return 'Token, session, atau API key ditolak server.';
+    }
+
+    if (status === '404' || status === '422' || includesText(message, ['not found', 'data tidak ditemukan', 'archive', 'checkbox'])) {
+        return 'Data atau pilihan dokumen tidak memenuhi precondition download.';
+    }
+
+    return 'API mengembalikan response error. Lihat Response Sample untuk body detail.';
 }
 
 function collectApiResponseSamples(reportName) {
@@ -914,6 +981,10 @@ function displayErrorCategory(value) {
         'N/A': 'N/A',
     };
     return labels[category] || category;
+}
+
+function includesText(value, keywords) {
+    return keywords.some((keyword) => value.includes(String(keyword).toLowerCase()));
 }
 
 function parseMetricTags(metricName) {

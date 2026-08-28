@@ -133,13 +133,28 @@ Authorization: Bearer <accessToken>
 x-api-key: <JIMMS_API_KEY>
 ```
 
-Body ZIP benar-benar dibaca oleh K6 sebagai binary dan dicek magic bytes `PK`. File ZIP tidak disimpan ke folder report; report berisi bukti sukses/gagal dari checks dan metric `data_received`.
+Body ZIP benar-benar dibaca oleh K6 sebagai binary dan dicek magic bytes `PK`. Default file ZIP tidak disimpan; report berisi bukti sukses/gagal dari checks dan metric `data_received`.
+
+Jika ingin menyimpan file ZIP yang sukses ke folder report:
+
+```env
+JIMMS_SAVE_DOWNLOADED_ZIP=true
+```
+
+Folder output ZIP:
+
+```text
+test-results/reports/k6/download-results/zip/<nama-report>-<timestamp>
+```
+
+Catatan: penyimpanan ZIP dilakukan oleh runner setelah K6 selesai, hanya untuk job yang sudah terbukti sukses di flow K6.
 
 Timeout export/download file dibuat internal. Timeout dan attempts untuk menunggu worker bisa diatur dari `.env`:
 
 ```env
 JIMMS_DOWNLOAD_PROGRESS_TIMEOUT=80s
 JIMMS_DOWNLOAD_PROGRESS_ATTEMPTS=60
+JIMMS_SAVE_DOWNLOADED_ZIP=false
 ```
 
 ## Command

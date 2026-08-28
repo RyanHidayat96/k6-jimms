@@ -283,6 +283,14 @@ function validateZipDownload(response, downloadJob) {
             'responseType=binary.',
         ],
     });
+
+    if (success && environment.saveDownloadedZip) {
+        console.log('[K6-DOWNLOADED-ZIP-READY] ' + JSON.stringify({
+            jobId: String(downloadJob.jobId || ''),
+            filename: String(downloadJob.filename || ''),
+            downloadUrl: String(downloadJob.downloadUrl || ''),
+        }));
+    }
 }
 
 function apiHeaders(authContext, accept = 'application/json, text/plain, */*') {
