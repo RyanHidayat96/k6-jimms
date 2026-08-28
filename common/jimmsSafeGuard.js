@@ -14,9 +14,3 @@ export function assertJimmsConfigured(env) {
         throw new Error(`Missing required env: ${missing.join(', ')}`);
     }
 }
-
-export function assertJimmsRunAllowed(label, options = {}) {
-    if (options.requiresStress && String(__ENV.JIMMS_ALLOW_STRESS || '').toLowerCase() !== 'true') {
-        throw new Error(`${label} blocked. Set JIMMS_ALLOW_STRESS=true before running stress test.`);
-    }
-}

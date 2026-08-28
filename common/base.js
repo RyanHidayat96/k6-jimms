@@ -67,18 +67,15 @@ function reportScriptName(scriptPath, testingType) {
     if (overrideName) return sanitizeReportName(overrideName);
 
     const baseName = scriptPath.split('/').pop().replace('.js', '');
-    const normalizedType = String(testingType || '').toLowerCase();
 
-    if (baseName === 'jimmsDownloadScenarios' && normalizedType.includes('stress')) return 'jimmsDownloadScenariosStress';
-    if (baseName === 'jimmsDownloadScenarios' && normalizedType.includes('load')) return 'jimmsDownloadScenariosLoad';
+    if (baseName === 'jimmsDownloadScenarios') return 'jimmsDownloadTest';
 
     return baseName;
 }
 
 function buildReportConfig(stageList, testingType, scriptPath) {
     const profile = profileFromTestingType(testingType);
-    const prefix = profile === 'stress' ? 'JIMMS_STRESS' : profile === 'smoke' ? 'JIMMS_SMOKE' : 'JIMMS';
-    const thresholdPrefix = profile === 'stress' ? 'JIMMS_STRESS' : profile === 'smoke' ? 'JIMMS_SMOKE' : 'JIMMS_LOAD';
+    const prefix = profile === 'smoke' ? 'JIMMS_SMOKE' : 'JIMMS';
 
     return {
         testingType,
@@ -87,9 +84,9 @@ function buildReportConfig(stageList, testingType, scriptPath) {
         apiBaseUrl: environment.apiBaseUrl,
         statusFilter: `status_id[]=${environment.regularInspectionStatusId}`,
         archiveSelection: downloadArchiveSelectionLabel(),
-        archiveScenarios: environment.downloadArchiveScenarios,
         downloadAllArchive: environment.downloadAllArchive ? 'true' : 'false',
-        downloadFlowMode: environment.downloadFlowMode,
+        downloadProgressTimeout: environment.downloadProgressTimeout,
+        downloadProgressAttempts: environment.downloadProgressAttempts,
         executor: envValue(`${prefix}_EXECUTOR`) || envValue('JIMMS_EXECUTOR'),
         targetVus: envValue(`${prefix}_TARGET_VUS`) || envValue('JIMMS_TARGET_VUS'),
         vus: envValue(`${prefix}_VUS`) || envValue('JIMMS_VUS'),
@@ -101,20 +98,12 @@ function buildReportConfig(stageList, testingType, scriptPath) {
         rampDown: envValue(`${prefix}_RAMP_DOWN`) || envValue('JIMMS_RAMP_DOWN'),
         gracefulRampDown: envValue(`${prefix}_GRACEFUL_RAMP_DOWN`) || envValue('JIMMS_GRACEFUL_RAMP_DOWN'),
         thinkTimeSeconds: envValue(`${prefix}_THINK_TIME_SECONDS`) || envValue('JIMMS_THINK_TIME_SECONDS'),
-        prepareDownloadBeforeRun: envValue('JIMMS_PREPARE_DOWNLOAD_BEFORE_RUN') || 'true',
-        downloadPrepareJobs: environment.downloadPrepareJobs,
-        downloadDirectUrlsConfigured: envValue('JIMMS_DOWNLOAD_DIRECT_URLS') ? 'true' : 'false',
-        downloadJobIdsConfigured: envValue('JIMMS_DOWNLOAD_JOB_IDS') ? 'true' : 'false',
-        downloadResponseType: environment.downloadResponseType,
-        downloadFileTimeout: environment.downloadFileTimeout,
-        downloadProgressTimeout: environment.downloadProgressTimeout,
-        downloadAllowPollFallback: environment.downloadAllowPollFallback ? 'true' : 'false',
         thresholds: {
-            checkRate: envValue(`${thresholdPrefix}_CHECK_RATE`) || envValue('JIMMS_CHECK_RATE'),
-            httpErrorRate: envValue(`${thresholdPrefix}_HTTP_ERROR_RATE`) || envValue('JIMMS_HTTP_ERROR_RATE'),
-            p95Ms: envValue(`${thresholdPrefix}_P95_THRESHOLD_MS`) || envValue('JIMMS_P95_THRESHOLD_MS'),
-            p99Ms: envValue(`${thresholdPrefix}_P99_THRESHOLD_MS`) || envValue('JIMMS_P99_THRESHOLD_MS'),
-            perEndpointP95Ms: envValue(`${thresholdPrefix}_PER_ENDPOINT_P95_THRESHOLD_MS`) || envValue('JIMMS_PER_ENDPOINT_P95_THRESHOLD_MS'),
+            checkRate: envValue('JIMMS_CHECK_RATE'),
+            httpErrorRate: envValue('JIMMS_HTTP_ERROR_RATE'),
+            p95Ms: envValue('JIMMS_P95_THRESHOLD_MS'),
+            p99Ms: envValue('JIMMS_P99_THRESHOLD_MS'),
+            perEndpointP95Ms: envValue('JIMMS_PER_ENDPOINT_P95_THRESHOLD_MS'),
         },
         stageList,
     };
@@ -133,14 +122,13 @@ function downloadArchiveSelectionLabel() {
     if (environment.downloadCheckStripmapPenanganan) labels.push('Stripmap Penanganan Inspeksi Rutin');
     if (environment.downloadCheckDataPenanganan) labels.push('Data Penanganan Inspeksi Rutin');
 
-    return labels.length > 0 ? labels.join(', ') : environment.downloadArchiveScenarios || '-';
+    return labels.length > 0 ? labels.join(', ') : '-';
 }
 
 function profileFromTestingType(testingType) {
     const normalized = String(testingType || '').toLowerCase();
-    if (normalized.includes('stress')) return 'stress';
     if (normalized.includes('smoke')) return 'smoke';
-    return 'load';
+    return 'test';
 }
 
 function envValue(key) {

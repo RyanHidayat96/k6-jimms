@@ -1,8 +1,6 @@
 import { buildScenarioOptions, getEnvInt, getLoadTestingStages } from '../../common/utility.js';
 
-export function loadOrStressProfile(scriptPath, rawProfile = __ENV.JIMMS_PROFILE || 'load') {
-    const profile = normalizeLoadProfile(rawProfile);
-    const isStress = profile === 'stress';
+export function testProfile(scriptPath) {
     const targetVus = getEnvInt('JIMMS_TARGET_VUS', 1);
     const scenarioOptions = buildScenarioOptions('JIMMS', {
         executor: 'ramping-vus',
@@ -12,13 +10,11 @@ export function loadOrStressProfile(scriptPath, rawProfile = __ENV.JIMMS_PROFILE
     });
 
     return {
-        profile,
+        profile: 'test',
         scriptPath,
-        testingType: `Download ${isStress ? 'Stress' : 'Load'} Testing`,
-        thresholdPrefix: 'JIMMS',
+        testingType: 'Download Test Performance Testing',
         scenarioOptions,
         thinkTimeSeconds: Number(__ENV.JIMMS_THINK_TIME_SECONDS || 1),
-        requiresStress: isStress,
     };
 }
 
@@ -27,7 +23,6 @@ export function smokeProfile(scriptPath) {
         profile: 'smoke',
         scriptPath,
         testingType: 'Download Smoke Performance Testing',
-        thresholdPrefix: 'JIMMS',
         scenarioOptions: buildScenarioOptions('JIMMS_SMOKE', {
             executor: 'shared-iterations',
             vus: 1,
@@ -35,12 +30,5 @@ export function smokeProfile(scriptPath) {
             maxDuration: '3m',
         }),
         thinkTimeSeconds: Number(__ENV.JIMMS_SMOKE_THINK_TIME_SECONDS || 0),
-        requiresStress: false,
     };
-}
-
-function normalizeLoadProfile(value) {
-    const normalized = String(value || 'load').toLowerCase();
-    if (['load', 'stress'].includes(normalized)) return normalized;
-    throw new Error('JIMMS_PROFILE must be load or stress.');
 }

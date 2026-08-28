@@ -2,22 +2,19 @@ import { sleep } from 'k6';
 import { processData } from '../../common/base.js';
 import { generateThresholds } from '../../common/commonThresholds.js';
 import { authenticate } from '../../common/jimmsAuth.js';
-import { prepareDownloadRun, runDownloadFlow, selectedRequestNames } from '../../common/jimmsDownloadClient.js';
-import { assertJimmsConfigured, assertJimmsRunAllowed } from '../../common/jimmsSafeGuard.js';
+import { runDownloadFlow, selectedRequestNames } from '../../common/jimmsDownloadClient.js';
+import { assertJimmsConfigured } from '../../common/jimmsSafeGuard.js';
 import { environment } from '../../config/environment.js';
-import { loadOrStressProfile } from '../support/profileConfig.js';
+import { testProfile } from '../support/profileConfig.js';
 
 const scriptPath = 'tests/downloadTest/jimmsDownloadScenarios.js';
-const profile = loadOrStressProfile(scriptPath);
+const profile = testProfile(scriptPath);
 
 assertJimmsConfigured(environment);
-assertJimmsRunAllowed(`JIMMS download ${profile.profile} performance test`, {
-    requiresStress: profile.requiresStress,
-});
 
 export const options = {
     scenarios: profile.scenarioOptions.scenarios,
-    thresholds: generateThresholds(selectedRequestNames(), profile.thresholdPrefix),
+    thresholds: generateThresholds(selectedRequestNames()),
     systemTags: ['status', 'method', 'url', 'name', 'group', 'check'],
     summaryTrendStats: ['avg', 'min', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
     insecureSkipTLSVerify: environment.insecureSkipTLSVerify,
@@ -25,7 +22,7 @@ export const options = {
 };
 
 export function setup() {
-    return prepareDownloadRun(authenticate());
+    return authenticate();
 }
 
 export default function (authContext) {

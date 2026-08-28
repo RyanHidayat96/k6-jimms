@@ -40,15 +40,6 @@ export function getLoadTestingStages(targetUser = defaultTargetUser) {
     ];
 }
 
-export function getStressTestingStages(targetUser = defaultTargetUser) {
-    return [
-        { duration: __ENV.JIMMS_STRESS_RAMP_UP || '30s', target: targetUser },
-        { duration: __ENV.JIMMS_STRESS_HOLD_125 || '1m', target: Math.ceil(targetUser * 1.25) },
-        { duration: __ENV.JIMMS_STRESS_HOLD_150 || '1m', target: Math.ceil(targetUser * 1.5) },
-        { duration: __ENV.JIMMS_STRESS_RAMP_DOWN || '30s', target: 0 },
-    ];
-}
-
 export function buildScenarioOptions(prefix, defaults = {}) {
     const executor = String(__ENV[`${prefix}_EXECUTOR`] || defaults.executor || 'ramping-vus').toLowerCase();
     const scenario = { executor };

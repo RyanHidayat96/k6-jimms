@@ -9,40 +9,16 @@ const EXPORT_REQUEST_NAME = 'POST /v1/regular-inspection/export/{id}';
 const PROGRESS_REQUEST_NAME = 'GET /v1/regular-inspection/export/{jobId}/progress-stream';
 const DOWNLOAD_FILE_REQUEST_NAME = 'GET /v1/regular-inspection/export/{jobId}/download';
 
-const ARCHIVE_SETS = {
-    all: [
-        'jsa_form',
-        'preparation_form',
-        'administration_form',
-        'documents',
-        'maintenance_data',
-        'maintenance_stripmap',
-        'inspection',
-        'stripmap',
-    ],
-    preparation: ['jsa_form', 'preparation_form'],
-    jsa: ['jsa_form'],
-    'preparation-form': ['preparation_form'],
-    administration: ['administration_form'],
-    inspection: ['inspection'],
-    documentation: ['documents'],
-    documents: ['documents'],
-    stripmap: ['stripmap'],
-    maintenance: ['maintenance_data', 'maintenance_stripmap'],
-    'maintenance-data': ['maintenance_data'],
-    'maintenance-stripmap': ['maintenance_stripmap'],
-};
-
-const ARCHIVE_LABELS = {
-    jsa_form: 'Form JSA',
-    preparation_form: 'Form Persiapan',
-    administration_form: 'Data Administrasi',
-    inspection: 'Data Inspeksi Rutin',
-    documents: 'Dokumentasi Inspeksi Rutin',
-    stripmap: 'Stripmap Inspeksi Rutin',
-    maintenance_stripmap: 'Stripmap Penanganan Inspeksi Rutin',
-    maintenance_data: 'Data Penanganan Inspeksi Rutin',
-};
+const ALL_ARCHIVES = [
+    'jsa_form',
+    'preparation_form',
+    'administration_form',
+    'documents',
+    'maintenance_data',
+    'maintenance_stripmap',
+    'inspection',
+    'stripmap',
+];
 
 const CHECKBOX_ARCHIVES = [
     ['downloadCheckFormJsa', 'jsa_form'],
@@ -59,31 +35,6 @@ export function selectedRequestNames() {
     return [EXPORT_REQUEST_NAME, PROGRESS_REQUEST_NAME, DOWNLOAD_FILE_REQUEST_NAME];
 }
 
-export function prepareDownloadRun(authContext) {
-    if (authContext && authContext.skipped) return authContext;
-
-    if (isRealUserFlow()) {
-        console.log('[K6-DOWNLOAD-FLOW] ' + JSON.stringify({ mode: 'real-user' }));
-        return authContext;
-    }
-
-    const preparedJobs = preparedDownloadJobsFromEnv();
-
-    if (preparedJobs.length === 0) {
-        throw new Error('No prepared ZIP download jobs found. Fill JIMMS_DOWNLOAD_DIRECT_URLS/JIMMS_DOWNLOAD_JOB_IDS, or set JIMMS_DOWNLOAD_FLOW_MODE=real-user.');
-    }
-
-    console.log('[K6-DOWNLOAD-PREPARED] ' + JSON.stringify({
-        count: preparedJobs.length,
-        source: preparedJobs[0].source || 'runner-env',
-    }));
-
-    return {
-        ...authContext,
-        preparedDownloadJobs: preparedJobs,
-    };
-}
-
 export function runDownloadFlow(authContext) {
     if (authContext && authContext.skipped) {
         console.warn('[K6-SKIPPED] ' + JSON.stringify({
@@ -93,12 +44,7 @@ export function runDownloadFlow(authContext) {
         return;
     }
 
-    if (isRealUserFlow()) {
-        runRealUserDownloadFlow(authContext);
-        return;
-    }
-
-    downloadZipWithRetry(authContext, pickPreparedDownloadJob(authContext));
+    runRealUserDownloadFlow(authContext);
 }
 
 function runRealUserDownloadFlow(authContext) {
@@ -114,15 +60,14 @@ function runRealUserDownloadFlow(authContext) {
     const archiveScenario = pickArchiveScenario();
     const exportJob = createExportJob(authContext, inspectionId, archiveScenario);
     const progress = downloadUrlFromProgressStream(authContext, exportJob.jobId);
-    const downloadUrl = progress.downloadUrl || `${environment.apiBaseUrl}/v1/regular-inspection/export/${encodeURIComponent(exportJob.jobId)}/download`;
 
-    downloadZipWithRetry(authContext, {
+    downloadZip(authContext, {
         inspectionId: String(inspectionId),
         archiveScenario: archiveScenario.name,
         jobId: exportJob.jobId,
         filename: exportJob.filename,
-        downloadUrl,
-        source: progress.downloadUrl ? 'real-user-progress-stream' : 'real-user-download-poll',
+        downloadUrl: progress.downloadUrl,
+        source: 'real-user-progress-stream',
     });
 }
 
@@ -236,28 +181,42 @@ function createExportJob(authContext, inspectionId, archiveScenario) {
 function downloadUrlFromProgressStream(authContext, jobId) {
     if (!jobId) return {};
 
-    const response = http.get(`${environment.apiBaseUrl}/v1/regular-inspection/export/${encodeURIComponent(jobId)}/progress-stream`, {
-        headers: apiHeaders(authContext, 'text/event-stream'),
-        tags: { request: PROGRESS_REQUEST_NAME },
-        timeout: environment.downloadProgressTimeout,
-    });
-    const progress = lastSseJson(String(response.body || ''));
-    const hasProgressEvent = Boolean(progress);
-    const hasDownloadUrl = Boolean(progress && progress.downloadUrl);
-    const success = hasDownloadUrl;
+    const attempts = Math.max(1, Number(environment.downloadProgressAttempts || 1));
+    let lastResponse = null;
+    let lastProgress = null;
 
-    check(response, {
-        'progress stream is readable': () => response.status === 200 || hasProgressEvent,
-        'progress stream returns downloadUrl': () => hasDownloadUrl,
-    });
-    recordApiMetrics(response, PROGRESS_REQUEST_NAME, {
-        valid: Boolean(success),
-        message: success
-            ? 'Download URL ready from progress-stream'
-            : `Progress stream did not return downloadUrl. status=${progress && progress.status ? progress.status : 'N/A'}`,
-    });
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        const response = http.get(`${environment.apiBaseUrl}/v1/regular-inspection/export/${encodeURIComponent(jobId)}/progress-stream`, {
+            headers: apiHeaders(authContext, 'text/event-stream'),
+            tags: { request: PROGRESS_REQUEST_NAME },
+            timeout: environment.downloadProgressTimeout,
+        });
+        const progress = lastSseJson(String(response.body || ''));
+        const hasProgressEvent = Boolean(progress);
+        const hasDownloadUrl = Boolean(progress && progress.downloadUrl);
+        const jobFailed = Boolean(progress && String(progress.status || '').toUpperCase() === 'FAILED');
 
-    if (success) {
+        lastResponse = response;
+        lastProgress = progress;
+
+        if (!hasDownloadUrl && !jobFailed && attempt < attempts) {
+            sleep(2);
+            continue;
+        }
+
+        check(response, {
+            'progress stream is readable': () => response.status === 200 || hasProgressEvent,
+            'progress stream returns downloadUrl': () => hasDownloadUrl,
+        });
+        recordApiMetrics(response, PROGRESS_REQUEST_NAME, {
+            valid: hasDownloadUrl,
+            message: hasDownloadUrl
+                ? 'Download URL ready from progress-stream'
+                : `Progress stream did not return downloadUrl. status=${progress && progress.status ? progress.status : 'N/A'}`,
+        });
+
+        if (!hasDownloadUrl) break;
+
         recordRuntimeEvidence(PROGRESS_REQUEST_NAME, {
             endpointId: 'JIMMS_EXPORT_PROGRESS_STREAM',
             steps: [
@@ -265,6 +224,7 @@ function downloadUrlFromProgressStream(authContext, jobId) {
             ],
             sources: [
                 `jobId=${visibleRuntimeValue(jobId)}.`,
+                `attempt=${visibleRuntimeValue(attempt)}/${visibleRuntimeValue(attempts)}.`,
                 `status=${visibleRuntimeValue(progress.status)}.`,
                 `percentage=${visibleRuntimeValue(progress.percentage)}.`,
             ],
@@ -277,50 +237,33 @@ function downloadUrlFromProgressStream(authContext, jobId) {
         };
     }
 
-    if (!environment.downloadAllowPollFallback) {
-        throw new Error(`Progress stream did not return downloadUrl. http=${response.status}, status=${progress && progress.status ? progress.status : 'N/A'}, percentage=${progress && progress.percentage !== undefined ? progress.percentage : 'N/A'}`);
-    }
-
-    return {};
+    throw new Error(`Progress stream did not return downloadUrl. http=${lastResponse && lastResponse.status ? lastResponse.status : 'N/A'}, status=${lastProgress && lastProgress.status ? lastProgress.status : 'N/A'}, percentage=${lastProgress && lastProgress.percentage !== undefined ? lastProgress.percentage : 'N/A'}`);
 }
 
-function downloadZipWithRetry(authContext, preparedJob) {
-    if (!preparedJob || !preparedJob.downloadUrl) {
-        throw new Error('No prepared ZIP download URL available.');
+function downloadZip(authContext, downloadJob) {
+    if (!downloadJob || !downloadJob.downloadUrl) {
+        throw new Error('No ZIP download URL available.');
     }
 
-    const attempts = positiveInteger(environment.downloadFilePollAttempts, 1);
-    const intervalSeconds = positiveNumber(environment.downloadFilePollIntervalSeconds, 2);
-    let response = null;
+    const response = http.get(downloadJob.downloadUrl, {
+        headers: apiHeaders(authContext, 'application/zip, application/octet-stream, */*'),
+        tags: { request: DOWNLOAD_FILE_REQUEST_NAME },
+        timeout: environment.downloadFileTimeout,
+        responseType: environment.downloadResponseType,
+    });
 
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
-        response = http.get(preparedJob.downloadUrl, {
-            headers: apiHeaders(authContext, 'application/zip, application/octet-stream, */*'),
-            tags: { request: DOWNLOAD_FILE_REQUEST_NAME },
-            timeout: environment.downloadFileTimeout,
-            responseType: environment.downloadResponseType,
-        });
-
-        if (isZipDownloadResponse(response)) {
-            validateZipDownload(response, preparedJob, attempt);
-            return response;
-        }
-
-        if (attempt < attempts) sleep(intervalSeconds);
-    }
-
-    validateZipDownload(response, preparedJob, attempts);
+    validateZipDownload(response, downloadJob);
     return response;
 }
 
-function validateZipDownload(response, preparedJob, attempt) {
+function validateZipDownload(response, downloadJob) {
     const success = isZipDownloadResponse(response);
 
     check(response, {
         'zip download status is 200': () => response.status === 200,
         'zip download returns file headers': () => isZipDownloadResponse(response),
-        'zip download body downloaded': () => environment.downloadResponseType !== 'binary' || responseBodyLength(response.body) > 0,
-        'zip download body starts with PK': () => environment.downloadResponseType !== 'binary' || bodyStartsWithZipMagic(response.body),
+        'zip download body downloaded': () => responseBodyLength(response.body) > 0,
+        'zip download body starts with PK': () => bodyStartsWithZipMagic(response.body),
     });
     recordApiMetrics(response, DOWNLOAD_FILE_REQUEST_NAME, {
         valid: success,
@@ -334,11 +277,10 @@ function validateZipDownload(response, preparedJob, attempt) {
             'VU hit GET download ZIP dan validasi body file.',
         ],
         sources: [
-            `source=${visibleRuntimeValue(preparedJob.source || 'runner-env')}.`,
-            `jobId=${visibleRuntimeValue(preparedJob.jobId)}.`,
-            `downloadUrl=${visibleRuntimeValue(preparedJob.downloadUrl)}.`,
-            `attempt=${visibleRuntimeValue(attempt)}.`,
-            `responseType=${visibleRuntimeValue(environment.downloadResponseType)}.`,
+            `source=${visibleRuntimeValue(downloadJob.source || 'real-user-progress-stream')}.`,
+            `jobId=${visibleRuntimeValue(downloadJob.jobId)}.`,
+            `downloadUrl=${visibleRuntimeValue(downloadJob.downloadUrl)}.`,
+            'responseType=binary.',
         ],
     });
 }
@@ -351,115 +293,23 @@ function apiHeaders(authContext, accept = 'application/json, text/plain, */*') {
     };
 }
 
-function pickPreparedDownloadJob(authContext) {
-    const jobs = authContext && Array.isArray(authContext.preparedDownloadJobs)
-        ? authContext.preparedDownloadJobs
-        : [];
-
-    if (jobs.length === 0) {
-        throw new Error('No prepared ZIP download jobs available from setup.');
+function pickArchiveScenario() {
+    if (environment.downloadAllArchive) {
+        return { name: 'all', archives: ALL_ARCHIVES.slice() };
     }
-
-    return jobs[(__VU + __ITER - 1) % jobs.length];
-}
-
-function preparedDownloadJobsFromEnv() {
-    const raw = __ENV.JIMMS_PREPARED_DOWNLOAD_JOBS_JSON || '';
-    if (!raw) return directDownloadJobsFromEnv();
-
-    try {
-        const parsed = JSON.parse(raw);
-        if (!Array.isArray(parsed)) return [];
-        return parsed
-            .filter((job) => job && job.downloadUrl)
-            .map(normalizePreparedJob);
-    } catch (error) {
-        throw new Error(`Invalid JIMMS_PREPARED_DOWNLOAD_JOBS_JSON: ${error.message}`);
-    }
-}
-
-function directDownloadJobsFromEnv() {
-    const urls = splitCsv(environment.downloadDirectUrls).map((downloadUrl, index) => normalizePreparedJob({
-        downloadUrl: absoluteApiUrl(downloadUrl),
-        jobId: jobIdFromDownloadUrl(downloadUrl),
-        archiveScenario: 'direct-url',
-        source: 'JIMMS_DOWNLOAD_DIRECT_URLS',
-        index: index + 1,
-    }));
-    const jobIds = splitCsv(environment.downloadJobIds).map((jobId, index) => normalizePreparedJob({
-        downloadUrl: `${environment.apiBaseUrl}/v1/regular-inspection/export/${encodeURIComponent(jobId)}/download`,
-        jobId,
-        archiveScenario: 'direct-job-id',
-        source: 'JIMMS_DOWNLOAD_JOB_IDS',
-        index: index + 1,
-    }));
-
-    return urls.concat(jobIds);
-}
-
-function normalizePreparedJob(job) {
-    return {
-        inspectionId: String(job.inspectionId || ''),
-        archiveScenario: String(job.archiveScenario || ''),
-        jobId: String(job.jobId || ''),
-        filename: String(job.filename || ''),
-        downloadUrl: absoluteApiUrl(job.downloadUrl || ''),
-        source: String(job.source || 'runner-env'),
-        index: Number(job.index || 0),
-    };
-}
-
-function pickArchiveScenario(index = __VU + __ITER - 1) {
-    const checkboxScenario = archiveScenarioFromCheckboxes();
-    if (checkboxScenario) return checkboxScenario;
-
-    const names = archiveScenarioNames();
-    const scenarioIndex = environment.randomizeScenario
-        ? Math.floor(Math.random() * names.length)
-        : index % names.length;
-
-    return archiveScenarioByName(names[scenarioIndex]);
-}
-
-function archiveScenarioNames() {
-    const names = splitCsv(environment.downloadArchiveScenarios);
-    if (names.length === 0) {
-        throw new Error('No download checkbox selected. Set JIMMS_DOWNLOAD_ALL_ARCHIVE=true or set at least one JIMMS_DOWNLOAD_CHECK_* value to true.');
-    }
-
-    return names;
-}
-
-function archiveScenarioFromCheckboxes() {
-    if (environment.downloadAllArchive) return archiveScenarioByName('all');
 
     const archives = CHECKBOX_ARCHIVES
         .filter(([configKey]) => Boolean(environment[configKey]))
         .map(([, archiveValue]) => archiveValue);
 
-    if (archives.length === 0) return null;
+    if (archives.length === 0) {
+        throw new Error('No download checkbox selected. Set JIMMS_DOWNLOAD_ALL_ARCHIVE=true or set at least one JIMMS_DOWNLOAD_CHECK_* value to true.');
+    }
 
     return {
         name: archives.join('+'),
         archives,
     };
-}
-
-function archiveScenarioByName(rawName) {
-    const name = String(rawName || 'all').trim().toLowerCase();
-    const predefined = ARCHIVE_SETS[name];
-
-    if (predefined) {
-        return { name, archives: predefined.slice() };
-    }
-
-    const customArchives = name.split(/[+|]/).map((item) => item.trim()).filter(Boolean);
-    const invalid = customArchives.filter((value) => !ARCHIVE_LABELS[value]);
-    if (customArchives.length > 0 && invalid.length === 0) {
-        return { name, archives: customArchives };
-    }
-
-    throw new Error(`Unknown JIMMS_DOWNLOAD_ARCHIVE_SCENARIOS value "${rawName}".`);
 }
 
 function buildMultipartArchiveBody(archives) {
@@ -557,11 +407,6 @@ function absoluteApiUrl(value) {
     return `${environment.apiBaseUrl}${raw.startsWith('/') ? raw : `/${raw}`}`;
 }
 
-function jobIdFromDownloadUrl(value) {
-    const match = String(value || '').match(/\/export\/([^/]+)\/download(?:[?#].*)?$/i);
-    return match ? decodeURIComponent(match[1]) : '';
-}
-
 function responseBodyLength(body) {
     if (!body) return 0;
     if (typeof body.byteLength === 'number') return body.byteLength;
@@ -576,20 +421,6 @@ function bodyStartsWithZipMagic(body) {
     }
 
     return String(body).slice(0, 2) === 'PK';
-}
-
-function isRealUserFlow() {
-    return String(environment.downloadFlowMode || '').toLowerCase() === 'real-user';
-}
-
-function positiveInteger(value, fallback) {
-    const parsed = Number.parseInt(value, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function positiveNumber(value, fallback) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function splitCsv(value) {

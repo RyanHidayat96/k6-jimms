@@ -22,9 +22,9 @@ if (htmlFiles.length === 0) {
     process.exit(1);
 }
 
-const overviewPath = path.join(reportDir, 'jimmsDownloadPerformanceOverview.html');
-const target = fs.existsSync(overviewPath)
-    ? { fullPath: overviewPath }
+const indexPath = path.join(reportDir, 'index.html');
+const target = fs.existsSync(indexPath)
+    ? { fullPath: indexPath }
     : htmlFiles[0];
 openFile(target.fullPath);
 console.log(`Opened K6 HTML report: ${target.fullPath}`);

@@ -28,29 +28,24 @@ const MAIN_CHECK_PREFIXES = [
 
 if (summaryFiles.length === 0) {
     removeStaleOverviewFiles();
-    console.error(`No JIMMS K6 summary files found in ${reportDir}. Run smoke/load until K6 writes *-summary.json.`);
+    console.error(`No JIMMS K6 summary files found in ${reportDir}. Run smoke/test until K6 writes *-summary.json.`);
     latestRunErrors().forEach((item) => console.error(`Latest ${item.scriptName}: ${item.status}${item.error ? ` - ${item.error}` : ''}`));
     process.exit(1);
 }
+
+removeStaleDetailHtmlFiles();
 
 const generatedReports = summaryFiles.map((file) => {
     const summaryPath = path.join(reportDir, file);
     const summary = readJsonFile(summaryPath);
     const reportName = file.replace(/-summary\.json$/, '');
-    const reportFileName = `${reportFileBaseName(reportName)}.html`;
-    const outputPath = path.join(reportDir, reportFileName);
 
-    fs.writeFileSync(outputPath, renderDetailHtml(reportName, summary), 'utf8');
-    console.log(`Generated HTML report: ${outputPath}`);
-    return { reportName, summary, fileName: reportFileName, outputPath };
+    return { reportName, summary };
 });
 
-const overviewHtml = renderOverviewHtml(generatedReports);
-const overviewPath = path.join(reportDir, 'jimmsDownloadPerformanceOverview.html');
+const overviewHtml = renderSinglePageHtml(generatedReports);
 const indexPath = path.join(reportDir, 'index.html');
-fs.writeFileSync(overviewPath, overviewHtml, 'utf8');
 fs.writeFileSync(indexPath, overviewHtml, 'utf8');
-console.log(`Generated HTML report: ${overviewPath}`);
 console.log(`Generated HTML report: ${indexPath}`);
 
 function loadEndpointCatalog() {
@@ -75,6 +70,15 @@ function removeStaleOverviewFiles() {
     });
 }
 
+function removeStaleDetailHtmlFiles() {
+    if (!fs.existsSync(reportDir)) return;
+
+    fs.readdirSync(reportDir)
+        .filter((file) => file.toLowerCase().endsWith('.html'))
+        .filter((file) => file !== 'index.html')
+        .forEach((file) => fs.unlinkSync(path.join(reportDir, file)));
+}
+
 function latestRunErrors() {
     if (!fs.existsSync(debugDir)) return [];
 
@@ -96,31 +100,25 @@ function readJsonFile(filePath) {
     return JSON.parse(fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, ''));
 }
 
-function reportFileBaseName(reportName) {
-    const names = {
-        jimmsDownloadSmoke: 'jimmsDownloadSmoke',
-        jimmsDownloadScenariosLoad: 'jimmsDownloadScenariosLoad',
-        jimmsDownloadScenariosStress: 'jimmsDownloadScenariosStress',
-    };
-    return names[reportName] || reportName;
-}
-
 function displayReportName(reportName) {
     const names = {
         jimmsDownloadSmoke: 'Download - Smoke',
-        jimmsDownloadScenariosLoad: 'Download - Load',
-        jimmsDownloadScenariosStress: 'Download - Stress',
+        jimmsDownloadTest: 'Download - Test',
     };
     return names[reportName] || reportName;
 }
 
-function renderOverviewHtml(reports) {
+function renderSinglePageHtml(reports) {
+    const sortedReports = reports
+        .slice()
+        .sort((left, right) => displayReportName(left.reportName).localeCompare(displayReportName(right.reportName)));
     const rows = reports
+        .slice()
         .sort((left, right) => displayReportName(left.reportName).localeCompare(displayReportName(right.reportName)))
         .map((report) => {
             const summary = buildReportSummary(report.reportName, report.summary);
             return `<tr>
-<td><a href="${escapeHtml(report.fileName)}">${escapeHtml(displayReportName(report.reportName))}</a></td>
+<td>${escapeHtml(displayReportName(report.reportName))}</td>
 <td class="${statusClass(summary.status)}">${escapeHtml(summary.status)}</td>
 <td>${escapeHtml(formatNumber(summary.iterations))}</td>
 <td>${escapeHtml(formatNumber(summary.httpRequests))}</td>
@@ -149,11 +147,15 @@ function renderOverviewHtml(reports) {
         .slice(0, 12)
         .map((item) => `<tr><td>${escapeHtml(displayReportName(item.reportName))}</td><td>${escapeHtml(item.error.request)}</td><td>${escapeHtml(displayErrorCategory(item.error.category))}</td><td>${escapeHtml(item.error.status)}</td><td>${escapeHtml(item.error.responseCode)}</td><td>${escapeHtml(item.error.message)}</td><td>${formatNumber(item.error.count)}</td></tr>`)
         .join('');
+    const detailSections = sortedReports
+        .map((report) => renderDetailHtml(report.reportName, report.summary))
+        .join('');
 
-    return page('K6 Performance Overview', 'JIMMS download performance reports', `
-${section('Ringkasan Report', `<p class="small">Klik nama report untuk detail request, header, response sample, checks, thresholds, dan metrik lengkap.</p><table><thead><tr><th>Report</th><th>Status</th><th>Iterations</th><th>HTTP Requests</th><th>Valid Response</th><th>Load Error Rate</th><th>Valid P95</th><th>Max</th></tr></thead><tbody>${rows}</tbody></table>`)}
+    return page('K6 Performance Report', 'JIMMS download performance reports', `
+${section('Ringkasan Report', `<p class="small">Detail request, header, response sample, checks, thresholds, dan metrik lengkap ditampilkan langsung di halaman ini.</p><table><thead><tr><th>Report</th><th>Status</th><th>Iterations</th><th>HTTP Requests</th><th>Valid Response</th><th>Load Error Rate</th><th>Valid P95</th><th>Max</th></tr></thead><tbody>${rows}</tbody></table>`)}
 ${section('Failed Check Terbanyak', failedRows ? `<table><thead><tr><th>Report</th><th>Check</th><th>Pass</th><th>Fail</th></tr></thead><tbody>${failedRows}</tbody></table>` : '<p class="small">Tidak ada failed check.</p>')}
 ${section('Error Terbanyak', errorRows ? `<table><thead><tr><th>Report</th><th>Endpoint / Request</th><th>Kategori</th><th>HTTP Status</th><th>Response Code</th><th>Pesan Error</th><th>Jumlah</th></tr></thead><tbody>${errorRows}</tbody></table>` : '<p class="small">Tidak ada error HTTP/API yang tercatat.</p>')}
+${detailSections}
 `);
 }
 
@@ -170,8 +172,8 @@ function renderDetailHtml(reportName, summary) {
     const runtimeEvidence = collectRuntimeEvidence(reportName);
     const status = reportStatus(thresholds, checks, metrics);
 
-    return page('K6 Performance Report', displayName, `
-<a class="back-link" href="index.html" aria-label="Kembali ke halaman awal">&larr; Kembali ke halaman awal</a>
+    return `
+<h2 class="report-heading">${escapeHtml(displayName)}</h2>
 <section class="card grid">
 ${kpi('Status', status, statusClass(status))}
 ${kpi('Duration', durationMs === undefined ? '-' : formatMs(durationMs))}
@@ -191,7 +193,7 @@ ${section('HTTP Duration Global', metricTable(metrics.http_req_duration))}
 ${section('Checks', checksTable(checks))}
 ${section('Thresholds', thresholdsTable(thresholds))}
 ${section('Key Metrics', keyMetricsTable(metrics))}
-`);
+`;
 }
 
 function page(title, subtitle, body) {
@@ -223,6 +225,7 @@ body { margin:0; font-family: Arial, Helvetica, sans-serif; background:var(--bg)
 header { background:var(--head); color:white; padding:28px 36px; }
 h1 { margin:0 0 8px; font-size:28px; }
 main { padding:28px 36px 42px; }
+h2.report-heading { margin:30px 0 14px; padding-top:10px; font-size:24px; color:#123b5d; }
 a { color:#0f4c81; font-weight:700; text-decoration:none; }
 a:hover { text-decoration:underline; }
 .back-link { display:inline-flex; align-items:center; gap:6px; margin-bottom:16px; padding:8px 12px; border:1px solid rgba(255,255,255,.55); border-radius:6px; color:white; background:rgba(255,255,255,.12); font-weight:700; }
@@ -281,8 +284,8 @@ function runConfigurationForReport(summary, displayName, metrics, thresholds, du
         ['Status filter', safeConfigValue(config.statusFilter || `status_id[]=${env.JIMMS_REGULAR_INSPECTION_STATUS_ID || 27}`)],
         ['Archive selection', safeConfigValue(config.archiveSelection || archiveSelectionFromEnv())],
         ['All archive checkbox', safeConfigValue(config.downloadAllArchive || env.JIMMS_DOWNLOAD_ALL_ARCHIVE || 'true')],
-        ['Legacy archive scenarios', safeConfigValue(config.archiveScenarios || env.JIMMS_DOWNLOAD_ARCHIVE_SCENARIOS || '-')],
-        ['Download flow mode', safeConfigValue(config.downloadFlowMode || env.JIMMS_DOWNLOAD_FLOW_MODE || 'real-user')],
+        ['Progress timeout', safeConfigValue(config.downloadProgressTimeout || env.JIMMS_DOWNLOAD_PROGRESS_TIMEOUT || '80s')],
+        ['Progress attempts', safeConfigValue(config.downloadProgressAttempts || env.JIMMS_DOWNLOAD_PROGRESS_ATTEMPTS || '60')],
         ['Executor', safeConfigValue(config.executor)],
         ['Configured VU', safeConfigValue(config.vus || config.targetVus)],
         ['Actual max VU', safeConfigValue(metricNumber(metrics.vus_max, 'max') || metricNumber(metrics.vus_max, 'value'))],
@@ -293,14 +296,6 @@ function runConfigurationForReport(summary, displayName, metrics, thresholds, du
         ['Actual run duration', durationMs === undefined ? '-' : formatMs(durationMs)],
         ['Ramp up / hold / ramp down', `${safeConfigValue(config.rampUp)} / ${safeConfigValue(config.hold)} / ${safeConfigValue(config.rampDown)}`],
         ['Think time', `${safeConfigValue(config.thinkTimeSeconds)} second(s)`],
-        ['Prepare download before run', safeConfigValue(config.prepareDownloadBeforeRun || env.JIMMS_PREPARE_DOWNLOAD_BEFORE_RUN || 'true')],
-        ['Direct download URLs configured', safeConfigValue(config.downloadDirectUrlsConfigured || (env.JIMMS_DOWNLOAD_DIRECT_URLS ? 'true' : 'false'))],
-        ['Direct job IDs configured', safeConfigValue(config.downloadJobIdsConfigured || (env.JIMMS_DOWNLOAD_JOB_IDS ? 'true' : 'false'))],
-        ['Prepared ZIP jobs', safeConfigValue(config.downloadPrepareJobs || env.JIMMS_DOWNLOAD_PREPARE_JOBS || '1')],
-        ['Download response type', safeConfigValue(config.downloadResponseType || env.JIMMS_DOWNLOAD_RESPONSE_TYPE || 'none')],
-        ['Download timeout', safeConfigValue(config.downloadFileTimeout || env.JIMMS_DOWNLOAD_FILE_TIMEOUT || '-')],
-        ['Progress timeout', safeConfigValue(config.downloadProgressTimeout || env.JIMMS_DOWNLOAD_PROGRESS_TIMEOUT || '-')],
-        ['Poll fallback allowed', safeConfigValue(config.downloadAllowPollFallback || env.JIMMS_DOWNLOAD_ALLOW_POLL_FALLBACK || 'false')],
         ['Threshold valid response rate', safeConfigValue(thresholdValues.checkRate || thresholdRuleFor(thresholds, VALID_RESPONSE_RATE_METRIC))],
         ['Threshold load/capacity error rate', safeConfigValue(thresholdValues.httpErrorRate || thresholdRuleFor(thresholds, LOAD_ERROR_RATE_METRIC))],
         ['Threshold valid traffic P95 / P99', `${safeConfigValue(thresholdValues.p95Ms ? `${thresholdValues.p95Ms} ms` : thresholdRuleFor(thresholds, VALID_REQUEST_DURATION_METRIC, 'p(95)'))} / ${safeConfigValue(thresholdValues.p99Ms ? `${thresholdValues.p99Ms} ms` : thresholdRuleFor(thresholds, VALID_REQUEST_DURATION_METRIC, 'p(99)'))}`],
@@ -581,8 +576,12 @@ function collectDebugJson(marker, reportName) {
 }
 
 function debugLogFilesForReport(reportName) {
-    const latestPath = path.join(debugDir, `${reportName}-latest-log.json`);
-    if (reportName && fs.existsSync(latestPath)) {
+    const reportNames = debugReportNameAliases(reportName);
+
+    for (const name of reportNames) {
+        const latestPath = path.join(debugDir, `${name}-latest-log.json`);
+        if (!name || !fs.existsSync(latestPath)) continue;
+
         try {
             const latest = readJsonFile(latestPath);
             const latestFiles = [latest.stderrLog, latest.stdoutLog]
@@ -595,13 +594,20 @@ function debugLogFilesForReport(reportName) {
         }
     }
 
-    const prefix = reportName ? `${reportName}-` : '';
+    const prefixes = reportNames.map((name) => `${name}-`);
     return fs.readdirSync(debugDir)
         .filter((file) => file.endsWith('.log'))
-        .filter((file) => !prefix || file.startsWith(prefix))
+        .filter((file) => prefixes.length === 0 || prefixes.some((prefix) => file.startsWith(prefix)))
         .map((file) => ({ fullPath: path.join(debugDir, file), mtimeMs: fs.statSync(path.join(debugDir, file)).mtimeMs }))
         .sort((left, right) => right.mtimeMs - left.mtimeMs)
         .slice(0, 2);
+}
+
+function debugReportNameAliases(reportName) {
+    const aliases = [reportName].filter(Boolean);
+    if (reportName === 'jimmsDownloadTest') aliases.push('jimmsDownloadScenarios');
+    if (reportName === 'jimmsDownloadScenarios') aliases.push('jimmsDownloadTest');
+    return Array.from(new Set(aliases));
 }
 
 function extractDebugJsonPayload(line, marker) {
@@ -846,7 +852,7 @@ function archiveSelectionFromEnv() {
         .filter(([key]) => String(env[key] || '').toLowerCase() === 'true')
         .map(([, label]) => label);
 
-    return labels.length > 0 ? labels.join(', ') : env.JIMMS_DOWNLOAD_ARCHIVE_SCENARIOS || '-';
+    return labels.length > 0 ? labels.join(', ') : '-';
 }
 
 function preferredMetricRate(metrics, primaryName, fallbackName) {

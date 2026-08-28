@@ -8,8 +8,10 @@ function boolEnv(name, defaultValue = false) {
     return String(rawValue).toLowerCase() === 'true';
 }
 
-const downloadArchiveScenarios = __ENV.JIMMS_DOWNLOAD_ARCHIVE_SCENARIOS || '';
-const downloadAllArchiveDefault = downloadArchiveScenarios ? false : true;
+function intEnv(name, defaultValue) {
+    const value = Number.parseInt(__ENV[name], 10);
+    return Number.isFinite(value) && value > 0 ? value : defaultValue;
+}
 
 export const environment = {
     feBaseUrl: stripTrailingSlash(__ENV.JIMMS_FE_BASE_URL || __ENV.BASE_URL || ''),
@@ -24,12 +26,8 @@ export const environment = {
     listPerPage: __ENV.JIMMS_LIST_PER_PAGE || '5',
     extraListQuery: __ENV.JIMMS_EXTRA_LIST_QUERY || '',
     downloadInspectionIds: __ENV.JIMMS_DOWNLOAD_INSPECTION_IDS || '',
-    downloadDirectUrls: __ENV.JIMMS_DOWNLOAD_DIRECT_URLS || '',
-    downloadJobIds: __ENV.JIMMS_DOWNLOAD_JOB_IDS || '',
-    downloadFlowMode: __ENV.JIMMS_DOWNLOAD_FLOW_MODE || 'real-user',
     downloadRowStrategy: __ENV.JIMMS_DOWNLOAD_ROW_STRATEGY || 'rotate',
-    downloadArchiveScenarios,
-    downloadAllArchive: boolEnv('JIMMS_DOWNLOAD_ALL_ARCHIVE', downloadAllArchiveDefault),
+    downloadAllArchive: boolEnv('JIMMS_DOWNLOAD_ALL_ARCHIVE', true),
     downloadCheckFormJsa: boolEnv('JIMMS_DOWNLOAD_CHECK_FORM_JSA', false),
     downloadCheckFormPersiapan: boolEnv('JIMMS_DOWNLOAD_CHECK_FORM_PERSIAPAN', false),
     downloadCheckDataAdministrasi: boolEnv('JIMMS_DOWNLOAD_CHECK_DATA_ADMINISTRASI', false),
@@ -38,16 +36,12 @@ export const environment = {
     downloadCheckStripmapInspeksi: boolEnv('JIMMS_DOWNLOAD_CHECK_STRIPMAP_INSPEKSI', false),
     downloadCheckStripmapPenanganan: boolEnv('JIMMS_DOWNLOAD_CHECK_STRIPMAP_PENANGANAN', false),
     downloadCheckDataPenanganan: boolEnv('JIMMS_DOWNLOAD_CHECK_DATA_PENANGANAN', false),
-    randomizeScenario: boolEnv('JIMMS_DOWNLOAD_RANDOMIZE_SCENARIO', false),
-    exportTimeout: __ENV.JIMMS_EXPORT_TIMEOUT || '120s',
-    downloadPrepareJobs: __ENV.JIMMS_DOWNLOAD_PREPARE_JOBS || '1',
-    downloadFileTimeout: __ENV.JIMMS_DOWNLOAD_FILE_TIMEOUT || __ENV.JIMMS_EXPORT_TIMEOUT || '120s',
-    downloadProgressTimeout: __ENV.JIMMS_DOWNLOAD_PROGRESS_TIMEOUT || __ENV.JIMMS_DOWNLOAD_FILE_TIMEOUT || '120s',
-    downloadFilePollAttempts: __ENV.JIMMS_DOWNLOAD_FILE_POLL_ATTEMPTS || '3',
-    downloadFilePollIntervalSeconds: __ENV.JIMMS_DOWNLOAD_FILE_POLL_INTERVAL_SECONDS || '2',
-    downloadResponseType: __ENV.JIMMS_DOWNLOAD_RESPONSE_TYPE || 'none',
-    setupTimeout: __ENV.JIMMS_SETUP_TIMEOUT || '5m',
-    downloadAllowPollFallback: boolEnv('JIMMS_DOWNLOAD_ALLOW_POLL_FALLBACK', false),
-    insecureSkipTLSVerify: boolEnv('JIMMS_INSECURE_SKIP_TLS_VERIFY', false),
+    exportTimeout: '120s',
+    downloadFileTimeout: '120s',
+    downloadProgressTimeout: __ENV.JIMMS_DOWNLOAD_PROGRESS_TIMEOUT || '80s',
+    downloadProgressAttempts: intEnv('JIMMS_DOWNLOAD_PROGRESS_ATTEMPTS', 60),
+    downloadResponseType: 'binary',
+    setupTimeout: '5m',
+    insecureSkipTLSVerify: false,
     reportDir: __ENV.K6_REPORT_DIR || './test-results/reports/k6',
 };

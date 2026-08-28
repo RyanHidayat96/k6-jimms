@@ -13,7 +13,7 @@ export function generateThresholds(requestNames = []) {
 
     const thresholds = {
         [VALID_RESPONSE_RATE_METRIC]: [`rate>=${checkRate}`],
-        [LOAD_ERROR_RATE_METRIC]: [`rate<${httpErrorRate}`],
+        [LOAD_ERROR_RATE_METRIC]: [httpErrorRate <= 0 ? 'rate<=0' : `rate<${httpErrorRate}`],
         [VALID_REQUEST_DURATION_METRIC]: [`p(95)<${p95}`, `p(99)<${p99}`],
     };
 

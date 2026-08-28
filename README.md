@@ -119,32 +119,28 @@ Saat selesai, stream mengembalikan `downloadUrl`:
 GET /v1/regular-inspection/export/{jobId}/download
 ```
 
-Default script memakai `JIMMS_DOWNLOAD_FLOW_MODE=real-user`: tiap iteration membuat export job queued, menunggu ZIP siap, lalu hit endpoint download dan validasi body ZIP.
+Script selalu memakai real-user flow: tiap iteration membuat export job queued, menunggu ZIP siap lewat `progress-stream`, lalu hit endpoint download dan validasi body ZIP.
 
 ### Target Performance
 
-Endpoint yang diukur saat VU berjalan:
+Endpoint utama yang diukur saat VU berjalan:
 
 ```http
+POST /v1/regular-inspection/export/{inspectionId}
+GET /v1/regular-inspection/export/{jobId}/progress-stream
 GET /v1/regular-inspection/export/{jobId}/download
 Authorization: Bearer <accessToken>
 x-api-key: <JIMMS_API_KEY>
 ```
 
-Default `JIMMS_DOWNLOAD_RESPONSE_TYPE=binary`, jadi body ZIP benar-benar dibaca oleh K6 dan dicek sebagai file ZIP. File tidak disimpan ke folder report; report berisi bukti sukses/gagal dari checks dan metric `data_received`.
+Body ZIP benar-benar dibaca oleh K6 sebagai binary dan dicek magic bytes `PK`. File ZIP tidak disimpan ke folder report; report berisi bukti sukses/gagal dari checks dan metric `data_received`.
 
-Jumlah job ZIP yang disiapkan:
+Timeout export/download file dibuat internal. Timeout dan attempts untuk menunggu worker bisa diatur dari `.env`:
 
 ```env
-JIMMS_DOWNLOAD_FLOW_MODE=real-user
-JIMMS_DOWNLOAD_DIRECT_URLS=
-JIMMS_DOWNLOAD_JOB_IDS=
-JIMMS_DOWNLOAD_PREPARE_JOBS=1
-JIMMS_PREPARE_DOWNLOAD_BEFORE_RUN=false
-JIMMS_SETUP_TIMEOUT=5m
+JIMMS_DOWNLOAD_PROGRESS_TIMEOUT=80s
+JIMMS_DOWNLOAD_PROGRESS_ATTEMPTS=60
 ```
-
-`real-user` mengikuti UI: `POST export` -> job queued -> tunggu `progress-stream` -> `GET download`. Jika `progress-stream` stuck dan tidak memberi `downloadUrl` sampai `JIMMS_DOWNLOAD_PROGRESS_TIMEOUT`, test gagal. `download-only` dipakai jika ingin langsung hit URL download dari `JIMMS_DOWNLOAD_DIRECT_URLS` atau `JIMMS_DOWNLOAD_JOB_IDS`.
 
 ## Command
 
@@ -152,17 +148,16 @@ Dari folder ini:
 
 ```powershell
 npm run smoke
-npm run load
+npm run test
 ```
 
-Stress test diblokir sampai explicit allow:
+Generate dan open report:
 
 ```powershell
-$env:JIMMS_ALLOW_STRESS="true"
-npm run stress
+npm run report
 ```
 
-Generate report HTML:
+Atau pisah generate dan open:
 
 ```powershell
 npm run report:html
@@ -204,29 +199,17 @@ Mapping checkbox ke `archive[]` API:
 | `JIMMS_DOWNLOAD_CHECK_STRIPMAP_PENANGANAN` | Stripmap Penanganan Inspeksi Rutin | `maintenance_stripmap` |
 | `JIMMS_DOWNLOAD_CHECK_DATA_PENANGANAN` | Data Penanganan Inspeksi Rutin | `maintenance_data` |
 
-`JIMMS_DOWNLOAD_ALL_ARCHIVE=true` selalu mengabaikan parameter per checkbox. Legacy `JIMMS_DOWNLOAD_ARCHIVE_SCENARIOS` masih didukung jika dibutuhkan, tetapi tidak perlu dipakai untuk flow checkbox biasa.
+`JIMMS_DOWNLOAD_ALL_ARCHIVE=true` selalu mengabaikan parameter per checkbox.
 
 ## Data Test
 
-Default real-user flow:
+Flow test download:
 
 1. K6 setup login sekali dan ambil token.
 2. Tiap VU/iteration ambil `inspectionId` dari `JIMMS_DOWNLOAD_INSPECTION_IDS` atau list status_id[]=27.
 3. Tiap VU/iteration `POST /v1/regular-inspection/export/{inspectionId}`.
-4. Tiap VU/iteration tunggu job queued lewat `progress-stream`.
+4. Tiap VU/iteration tunggu job queued lewat `progress-stream` sampai `downloadUrl` ada atau attempts habis.
 5. Tiap VU/iteration validasi ZIP: status 200, header file, body terunduh, magic bytes `PK`.
-
-Fallback polling `GET /download` hanya aktif jika eksplisit:
-
-```env
-JIMMS_DOWNLOAD_ALLOW_POLL_FALLBACK=true
-```
-
-Mode download-only:
-
-1. Set `JIMMS_DOWNLOAD_FLOW_MODE=download-only`.
-2. Isi `JIMMS_DOWNLOAD_DIRECT_URLS` atau `JIMMS_DOWNLOAD_JOB_IDS`.
-3. VU/iteration hanya hit `GET /v1/regular-inspection/export/{jobId}/download`.
 
 Jika data filter kosong atau ingin pin data tertentu, isi:
 
@@ -242,9 +225,11 @@ JIMMS_DOWNLOAD_ROW_STRATEGY=rotate
 
 Gunakan `first` kalau semua iteration ingin memakai row pertama.
 
-## Load Profile
+## Test Profile
 
-Default `.env` dibuat kecil agar aman:
+`npm run test` memakai parameter ini.
+
+Default `.env.example` dibuat kecil agar aman:
 
 ```env
 JIMMS_EXECUTOR=shared-iterations
@@ -263,6 +248,18 @@ Executor yang didukung:
 | `shared-iterations` | `JIMMS_VUS`, `JIMMS_ITERATIONS`, `JIMMS_MAX_DURATION` |
 | `per-vu-iterations` | `JIMMS_VUS`, `JIMMS_ITERATIONS`, `JIMMS_MAX_DURATION` |
 
+Threshold juga satu untuk smoke dan test:
+
+```env
+JIMMS_CHECK_RATE=1
+JIMMS_HTTP_ERROR_RATE=0
+JIMMS_P95_THRESHOLD_MS=3600000
+JIMMS_P99_THRESHOLD_MS=3600000
+JIMMS_PER_ENDPOINT_P95_THRESHOLD_MS=3600000
+```
+
+Setting ini cocok untuk fokus berhasil/gagal: satu download utama gagal langsung `FAIL`, sedangkan speed tidak dijadikan penentu.
+
 ## Report
 
 Summary JSON dan HTML disimpan di:
@@ -270,6 +267,14 @@ Summary JSON dan HTML disimpan di:
 ```text
 test-results/reports/k6
 ```
+
+HTML utama:
+
+```text
+test-results/reports/k6/index.html
+```
+
+Report HTML dibuat satu file/satu halaman: ringkasan, detail request, header, response sample, checks, thresholds, dan metric tampil langsung tanpa klik nama report.
 
 Kriteria status report:
 
